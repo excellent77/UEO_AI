@@ -19,8 +19,17 @@ MACHINE_FEATURES = {
 MACHINE_TYPES = list(MACHINE_FEATURES.keys())
 
 
-def update_columns(file):
+def update_columns(file)->list:
+    """
+    依據上傳的 CSV 檔案，讀取欄位並更新前端選單選項，若無檔案則重置欄位。
+    傳回:
+        - 時間欄位單選選單 (Radio)
+        - 判斷欄位多選 (CheckboxGroup)
+        - 預測欄位多選 (CheckboxGroup)
+        - CSV 前五列資料預覽 (DataFrame)
+    """
     if file is None:
+        # 無檔案時, 回傳空選項及無預覽
         return [
             gr.update(choices=[], value=[]),
             gr.update(choices=[], value=[]),
@@ -40,10 +49,14 @@ def update_columns(file):
 
 
 def show_selection(
-        machine,
-        datetime_col,
-        train_cols,
-        label_cols )->str:
+        machine:str, # 選擇的設備類型
+        datetime_col:str, # 時間欄位名稱
+        train_cols:list, # 用於判斷的特徵欄位
+        label_cols:list  # 用於預測的標籤欄位
+        )->str:
+    """
+    組裝及回傳當前欄位及設備的使用者選擇摘要，於 Gradio Textbox 顯示。
+    """
     result = f"已選設備：{machine}\n"
     result += f"時間欄位：{datetime_col}\n"
     result += f"用於判斷欄位：{train_cols}\n"
@@ -52,18 +65,23 @@ def show_selection(
 
 
 def preprocess_and_export(
-    df,
-    datetime_col, 
-    feature_cols,
-    target_cols,
-    fill_strategy,
-    scale_method ):
-    # 讀取資料
+    df:pd.DataFrame, # 原始資料
+    datetime_col:str, # 時間欄位名稱
+    feature_cols:list, # 特徵(輸入)欄位清單
+    target_cols:list, # 標籤(預測目標)欄位清單
+    fill_strategy:str, # 缺失值填補策略
+    scale_method:str # 特徵正規化方式
+    )->list:
+    """
+    調用自訂 Preprocessing 模組的預處理流程，產生 LSTM 可用的特徵與標籤及標準化器。
+    傳回:
+        [資料形狀資訊, X特徵, y標籤, 標準化器物件]
+    """
+    # 進行資料清洗與轉換
     X, y, scaler = Preprocessing.preprocess_for_lstm(
         df, datetime_col, feature_cols, target_cols, fill_strategy, scale_method
     )
     shape_str = f"特徵 shape: {X.shape}; 標籤 shape: {y.shape}"
-
     return [shape_str, X, y, scaler]
 
 

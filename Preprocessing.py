@@ -2,22 +2,40 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.impute import SimpleImputer
+from typing import Literal
 
 
 
+# Constants for preprocessing
 FILL_STRATEGIES = ('mean', 'median', 'most_frequent', 'constant')
 SCALE_METHODS = ('minmax', 'standard')
 
 
 
-def clean_data(df:pd.DataFrame, datetime_col:str) -> pd.DataFrame:
+def clean_data(
+        df:pd.DataFrame, # 原始資料
+        datetime_col:str # 時間欄位名稱
+    ) -> pd.DataFrame:
+    '''
+    清洗資料，將時間欄位轉換為 datetime 格式並排序。
+    傳回:
+        - 清洗後的 DataFrame
+    '''
     df[datetime_col] = pd.to_datetime(df[datetime_col])
     df = df.sort_values(by=datetime_col)
     df = df.reset_index(drop=True)
     return df
 
 
-def fill_missing(df:pd.DataFrame , strategy:str='mean'): #strategy 可選 'mean', 'median', 'most_frequent', 'constant'
+def fill_missing(
+        df:pd.DataFrame, # 原始資料
+        strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean'# 缺失值填補策略
+        )->pd.DataFrame: 
+    '''
+    填補缺失值，僅對數值型欄位進行填補。
+    傳回:
+        - 填補後的 DataFrame
+    '''
     # 找出數值型欄位
     numeric_cols = df.select_dtypes(include=['number']).columns
     # 只對數值型欄位做補值
@@ -32,7 +50,16 @@ def fill_missing(df:pd.DataFrame , strategy:str='mean'): #strategy 可選 'mean'
     return df_imputed
 
 
-def scale_features(df, method='minmax'):
+def scale_features(
+        df:pd.DataFrame, # 原始資料
+        method:Literal['minmax', 'standard']='minmax' # 特徵正規化方式，可選 'minmax', 'standard'
+        )-> tuple:
+    '''
+    對數值型欄位進行特徵縮放。
+    傳回:
+        - 縮放後的 DataFrame
+        - 標準化器物件
+    '''
     # 只選擇數值型欄位
     numeric_cols = df.select_dtypes(include=['number']).columns
     if method == 'minmax':
@@ -52,14 +79,22 @@ def scale_features(df, method='minmax'):
     return df_scaled, scaler
 
 
-def preprocess_for_lstm(df:pd.DataFrame, 
-                        datetime_col:str, 
-                        feature_cols:list,
-                        target_cols:list,
-                        fill_strategy:str='mean', 
-                        scale_method:str='minmax', 
-                        sequence_length:int=24)->tuple:
-    
+def preprocess_for_lstm(df:pd.DataFrame, # 原始資料
+                        datetime_col:str, # 時間欄位名稱
+                        feature_cols:list, # 特徵(輸入)欄位清單
+                        target_cols:list, # 標籤(預測目標)欄位清單
+                        *,
+                        fill_strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean', # 缺失值填補策略
+                        scale_method:Literal['minmax', 'standard']='minmax', # 特徵正規化方式
+                        sequence_length:int=24 # LSTM 序列長度
+                        )->tuple:
+    '''
+    對資料進行預處理，生成 LSTM 所需的特徵和標籤。
+    傳回:
+        - X: 特徵數組
+        - y: 標籤數組
+        - scaler: 標準化器物件
+    '''
     # 若 df 不是 DataFrame，嘗試轉換
     if not isinstance(df, pd.DataFrame):
         try:

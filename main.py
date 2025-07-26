@@ -84,7 +84,14 @@ def preprocess_and_export(
     shape_str = f"特徵 shape: {X.shape}; 標籤 shape: {y.shape}"
     return [shape_str, X, y, scaler]
 
-
+def get_hyperparam_summary(epochs, lr, loss, opt, sch):
+    return (
+        f"Epochs：{epochs}\n"
+        f"Learning Rate：{lr}\n"
+        f"Loss Function：{loss}\n"
+        f"Optimizer：{opt}\n"
+        f"Scheduler：{sch}"
+    )
 
 if __name__ == "__main__":
     with gr.Blocks() as demo:
@@ -139,6 +146,26 @@ if __name__ == "__main__":
                         gr.State()  # 用於保存 scaler 狀態
                     ]
                 )
+            
+            with gr.Tab("超參數設定"):
+                epochs_input = gr.Number(label="訓練週期數 (Epochs)", value=50, precision=0)
+                lr_input = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-4, maximum=1e-3, step=1e-5, value=1e-3, interactive=True)
+                loss_dropdown = gr.Dropdown(choices=["MSE", "MAE", "Huber"], label="Loss Function", value="MSE")
+                opt_dropdown = gr.Dropdown(choices=["Adam", "SGD", "RMSprop"], label="Optimizer", value="Adam")
+                sch_dropdown = gr.Dropdown(choices=["None", "StepLR", "ExponentialLR"], label="Scheduler", value="None")
+
+                btn_hyper = gr.Button("確認設定")
+                hyper_summary = gr.Textbox(label="超參數設定摘要", lines=5, interactive=False)
+
+                btn_hyper.click(
+                    fn=get_hyperparam_summary,
+                    inputs=[epochs_input, lr_input, loss_dropdown, opt_dropdown, sch_dropdown],
+                    outputs=hyper_summary
+                )
+            
+            with gr.Tab("規劃求解器"):
+                gr.Markdown("")
+
 
         # 上傳CSV時，更新欄位選項與預覽
         csv_file.change(

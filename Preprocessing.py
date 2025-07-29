@@ -5,7 +5,6 @@ from sklearn.impute import SimpleImputer
 from typing import Literal
 
 
-
 # Constants for preprocessing
 FILL_STRATEGIES = ('mean', 'median', 'most_frequent', 'constant')
 SCALE_METHODS = ('minmax', 'standard')
@@ -83,7 +82,6 @@ def preprocess_for_lstm(df:pd.DataFrame, # 原始資料
                         datetime_col:str, # 時間欄位名稱
                         feature_cols:list, # 特徵(輸入)欄位清單
                         target_cols:list, # 標籤(預測目標)欄位清單
-                        *,
                         fill_strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean', # 缺失值填補策略
                         scale_method:Literal['minmax', 'standard']='minmax', # 特徵正規化方式
                         sequence_length:int=24 # LSTM 序列長度

@@ -19,6 +19,7 @@ MACHINE_FEATURES = {
 MACHINE_TYPES = list(MACHINE_FEATURES.keys())
 
 
+
 def update_columns(file)->list:
     """
     依據上傳的 CSV 檔案，讀取欄位並更新前端選單選項，若無檔案則重置欄位。

@@ -1,6 +1,11 @@
+import os
 import gradio as gr
 import pandas as pd
 import Preprocessing
+import torch
+import models
+from utils import losses, optimizers, schedulers
+import matplotlib.pyplot as plt
 
 
 
@@ -17,8 +22,48 @@ MACHINE_FEATURES = {
 }
 
 MACHINE_TYPES = list(MACHINE_FEATURES.keys())
+MODEL_PATH = os.path.join(os.getcwd(), "model_record/model.pth")
+CONFIG = {
+    "warmup_scheduler": {
+        "warmup_epochs": 5
+    },
+    "train_scheduler": {
+        "scheduler_type": "reduceonplateau",
+        "mode": "min",
+        "patience": 10,
+        "scheduler_args": {
+            "min_lr": 1e-6,
+            "t_0_epochs": 10,
+            "t_mult": 1
+        }
+    }
+}
 
 
+
+def create_matplotlib_figure(
+        x,
+        y,
+        title
+    )-> plt.Figure:
+    '''
+    根據 x 和 y 數據生成 matplotlib 圖形，並設置標題和標籤。
+    參數:
+        - x: x 軸數據
+        - y: y 軸數據
+        - title: 圖形標題
+    返回:
+        - matplotlib 圖形對象
+    '''
+
+    fig, ax = plt.subplots(figsize=(6,4))
+    ax.plot(x, y, marker='o')
+    ax.set_title(title)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel(title)
+    ax.grid(True)
+
+    return fig
 
 def update_columns(file)->list:
     """
@@ -54,7 +99,7 @@ def show_selection(
         datetime_col:str, # 時間欄位名稱
         train_cols:list, # 用於判斷的特徵欄位
         label_cols:list  # 用於預測的標籤欄位
-        )->str:
+    )->str:
     """
     組裝及回傳當前欄位及設備的使用者選擇摘要，於 Gradio Textbox 顯示。
     """
@@ -66,12 +111,12 @@ def show_selection(
 
 
 def preprocess_and_export(
-    df:pd.DataFrame, # 原始資料
-    datetime_col:str, # 時間欄位名稱
-    feature_cols:list, # 特徵(輸入)欄位清單
-    target_cols:list, # 標籤(預測目標)欄位清單
-    fill_strategy:str, # 缺失值填補策略
-    scale_method:str # 特徵正規化方式
+        df:pd.DataFrame, # 原始資料
+        datetime_col:str, # 時間欄位名稱
+        feature_cols:list, # 特徵(輸入)欄位清單
+        target_cols:list, # 標籤(預測目標)欄位清單
+        fill_strategy:str, # 缺失值填補策略
+        scale_method:str # 特徵正規化方式
     )->list:
     """
     調用自訂 Preprocessing 模組的預處理流程，產生 LSTM 可用的特徵與標籤及標準化器。
@@ -85,14 +130,57 @@ def preprocess_and_export(
     shape_str = f"特徵 shape: {X.shape}; 標籤 shape: {y.shape}"
     return [shape_str, X, y, scaler]
 
-def get_hyperparam_summary(epochs, lr, loss, opt, sch):
-    return (
-        f"Epochs：{epochs}\n"
-        f"Learning Rate：{lr}\n"
-        f"Loss Function：{loss}\n"
-        f"Optimizer：{opt}\n"
-        f"Scheduler：{sch}"
+def start_to_train(
+        epochs,
+        lr,
+        loss,
+        opt,
+        sch,
+        feature,
+        labels
+    ):
+    loss_function = losses.build_loss(loss)
+    dataloader = Preprocessing.process_to_dataloader(feature, labels)
+
+    model = models.LSTM_Model(
+        input_size=int(feature.shape[-1]),
+        hidden_size=64,
+        num_layers=2,
+        output_size=int(labels.shape[-1])
     )
+    
+    optimizer = optimizers.build_optimizer(opt, model, lr)
+    scheduler = schedulers.build_scheduler(sch, optimizer, CONFIG)
+
+    if os.path.exists(MODEL_PATH):
+        yield None, None, "Loading pre-trained model..."
+        model.load_state_dict(torch.load("model.pth"))
+
+    for loss_hist, lr_hist, status in models.train_model(
+        model=model,
+        train_loader=dataloader,
+        criterion=loss_function,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        num_epochs=epochs
+    ):
+        # 將 loss 和 lr 歷史記錄轉換為 matplotlib 圖形
+        loss_fig = create_matplotlib_figure(
+            list(range(1, len(loss_hist)+1)),
+            loss_hist,
+            "Loss curve"
+        )
+
+        lr_fig = create_matplotlib_figure(
+            list(range(1, len(lr_hist)+1)),
+            lr_hist,
+            "LR curve"
+        )
+
+        yield loss_fig, lr_fig, status
+        plt.close(loss_fig)
+        plt.close(lr_fig)
+
 
 if __name__ == "__main__":
     with gr.Blocks() as demo:
@@ -127,8 +215,8 @@ if __name__ == "__main__":
                 scale_dropdown = gr.Dropdown(choices=Preprocessing.SCALE_METHODS, label="請選擇正規化方式")
                 btn_clean = gr.Button("確認選擇")
                 shape_info = gr.Textbox(label="資料 shape", interactive=False)
-                clean_feature = gr.Dataframe(label="清洗後特徵資料預覽", interactive=False)
-                clean_labels = gr.Dataframe(label="清洗後標籤資料預覽", interactive=False)
+                clean_feature = gr.Numpy(label="清洗後特徵資料預覽", interactive=False)
+                clean_labels = gr.Numpy(label="清洗後特徵資料預覽", interactive=False)
 
                 btn_clean.click(
                     fn=preprocess_and_export,
@@ -151,21 +239,31 @@ if __name__ == "__main__":
             with gr.Tab("超參數設定"):
                 epochs_input = gr.Number(label="訓練週期數 (Epochs)", value=50, precision=0)
                 lr_input = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-4, maximum=1e-3, step=1e-5, value=1e-3, interactive=True)
-                loss_dropdown = gr.Dropdown(choices=["MSE", "MAE", "Huber"], label="Loss Function", value="MSE")
-                opt_dropdown = gr.Dropdown(choices=["Adam", "SGD", "RMSprop"], label="Optimizer", value="Adam")
-                sch_dropdown = gr.Dropdown(choices=["None", "StepLR", "ExponentialLR"], label="Scheduler", value="None")
+                loss_dropdown = gr.Dropdown(choices=["CrossEntropy","BCEW","MSE","L1Loss"], label="Loss Function", value="MSE")
+                opt_dropdown = gr.Dropdown(choices=["adam", "adamw", "sgd"], label="Optimizer", value="adam")
+                sch_dropdown = gr.Dropdown(choices=["warmup_scheduler", "training_scheduler"], label="Scheduler", value="warmup_scheduler")
 
-                btn_hyper = gr.Button("確認設定")
-                hyper_summary = gr.Textbox(label="超參數設定摘要", lines=5, interactive=False)
+                btn_train = gr.Button("開始訓練模型")
+                out_text = gr.Textbox(lines=5, label="訓練進度")
+                loss_plot = gr.Plot(label="Loss 變化")
+                lr_plot = gr.Plot(label="Learning Rate 變化")
 
-                btn_hyper.click(
-                    fn=get_hyperparam_summary,
-                    inputs=[epochs_input, lr_input, loss_dropdown, opt_dropdown, sch_dropdown],
-                    outputs=hyper_summary
+                btn_train.click(
+                    fn=start_to_train,
+                    inputs=[
+                        epochs_input,
+                        lr_input,
+                        loss_dropdown,
+                        opt_dropdown,
+                        sch_dropdown,
+                        clean_feature,
+                        clean_labels,
+                    ],
+                    outputs=[loss_plot, lr_plot, out_text]
                 )
-            
+                        
             with gr.Tab("規劃求解器"):
-                gr.Markdown("")
+                gr.Markdown("正在開發中...")
 
 
         # 上傳CSV時，更新欄位選項與預覽

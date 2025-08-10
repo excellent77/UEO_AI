@@ -1,3 +1,4 @@
+from typing import Literal
 import torch
 import torch.nn as nn
 
@@ -73,5 +74,34 @@ class Compose_Loss(nn.Module):
             loss = loss_fn(predictions, targets)
             total_loss += self.weights[i] * loss
         return total_loss
+    
+
+
+def build_loss(
+        loss_type: Literal[
+            "CrossEntropy",
+            "BCEW",
+            "MSE",
+            "L1Loss"
+        ], # Type of optimizer
+        *args, # Additional arguments
+        **kwargs, # Additional keyword arguments
+    ):
+    '''
+    builds the loss based on the type and arguments provided
+    return:
+         the loss function object
+    '''
+
+    if loss_type == "CrossEntropy":
+        return CrossEntropyLoss(*args, **kwargs)
+    elif loss_type == "BCEW":
+        return BinaryCrossEntropyWithLogits(*args, **kwargs)
+    elif loss_type == "MSE":
+        return MSELoss(*args, **kwargs)
+    elif loss_type == "L1Loss":
+        return L1Loss(*args, **kwargs)
+    else:
+        raise ValueError(f"Unsupported loss type: {loss_type}")
 
     

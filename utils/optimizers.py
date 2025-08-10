@@ -17,14 +17,14 @@ def build_optimizer(
     '''
 
     if optimizer_type == "adam":
-        return optim.adam(
+        return optim.Adam(
             model.parameters(),
             *args,
             **kwargs
             )
     
     elif optimizer_type == "adamw":
-        return optim.adamw(
+        return optim.AdamW (
             model.parameters(),
             *args,
             **kwargs

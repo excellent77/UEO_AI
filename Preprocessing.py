@@ -3,6 +3,8 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.impute import SimpleImputer
 from typing import Literal
+import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 
 # Constants for preprocessing
@@ -29,7 +31,7 @@ def clean_data(
 def fill_missing(
         df:pd.DataFrame, # 原始資料
         strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean'# 缺失值填補策略
-        )->pd.DataFrame: 
+    )->pd.DataFrame: 
     '''
     填補缺失值，僅對數值型欄位進行填補。
     傳回:
@@ -78,14 +80,15 @@ def scale_features(
     return df_scaled, scaler
 
 
-def preprocess_for_lstm(df:pd.DataFrame, # 原始資料
-                        datetime_col:str, # 時間欄位名稱
-                        feature_cols:list, # 特徵(輸入)欄位清單
-                        target_cols:list, # 標籤(預測目標)欄位清單
-                        fill_strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean', # 缺失值填補策略
-                        scale_method:Literal['minmax', 'standard']='minmax', # 特徵正規化方式
-                        sequence_length:int=24 # LSTM 序列長度
-                        )->tuple:
+def preprocess_for_lstm(
+        df:pd.DataFrame, # 原始資料
+        datetime_col:str, # 時間欄位名稱
+        feature_cols:list, # 特徵(輸入)欄位清單
+        target_cols:list, # 標籤(預測目標)欄位清單
+        fill_strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean', # 缺失值填補策略
+        scale_method:Literal['minmax', 'standard']='minmax', # 特徵正規化方式
+        sequence_length:int=24 # LSTM 序列長度
+    )->tuple:
     '''
     對資料進行預處理，生成 LSTM 所需的特徵和標籤。
     傳回:
@@ -108,12 +111,29 @@ def preprocess_for_lstm(df:pd.DataFrame, # 原始資料
     X, y = [], []
     data = df.values
     for i in range(len(data) - sequence_length):
-        X.append(data[i:i+sequence_length, [df.columns.get_loc(i) for i in feature_cols]])
-        y.append(data[i+sequence_length, [df.columns.get_loc(i) for i in target_cols]])
+        X.append(np.array(data[i:i+sequence_length, [df.columns.get_loc(i) for i in feature_cols]]))
+        y.append(np.array(data[i+sequence_length, [df.columns.get_loc(i) for i in target_cols]]))
     X = np.array(X)
     y = np.array(y)
 
     return X, y, scaler
+
+def process_to_dataloader(
+        X:pd.DataFrame, # 特徵數據
+        y:pd.DataFrame,
+        batch_size:int=32
+    )->DataLoader:
+    """
+    將特徵和標籤轉換為 PyTorch DataLoader 格式。
+    傳回:
+        - DataLoader 物件
+    """
+
+    dataset = TensorDataset(
+        torch.tensor(X, dtype=torch.float32),
+        torch.tensor(y, dtype=torch.float32)
+    )
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 
 

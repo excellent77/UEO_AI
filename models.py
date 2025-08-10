@@ -1,6 +1,11 @@
+import os
 import time
 import torch
 import torch.nn as nn
+
+
+
+MODEL_DIR = "model_record"
 
 
 
@@ -96,7 +101,9 @@ def train_model(
         if avg_loss < best_loss:
             record = 0
             best_loss = avg_loss
-            torch.save(model.state_dict(), f"model_record/LSTM_{timestamp}.pth")
+            if not os.path.exists(MODEL_DIR):
+                os.makedirs(MODEL_DIR)
+            torch.save(model.state_dict(), f"{MODEL_DIR}/LSTM_{timestamp}.pth")
         else:
             record += 1
             if record >= early_stopping:

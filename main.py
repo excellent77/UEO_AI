@@ -153,8 +153,8 @@ def start_to_train(
     scheduler = schedulers.build_scheduler(sch, optimizer, CONFIG)
 
     if os.path.exists(MODEL_PATH):
-        yield None, None, "Loading pre-trained model..."
-        model.load_state_dict(torch.load("model.pth"))
+        print("Loading pre-trained model...")
+        model.load_state_dict(torch.load(MODEL_PATH))
 
     for loss_hist, lr_hist, status in models.train_model(
         model=model,

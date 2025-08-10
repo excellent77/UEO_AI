@@ -3,6 +3,11 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import LRScheduler
 
 
+
+SCH_LIST = ("warmup_scheduler", "training_scheduler")
+
+
+
 ##################################################################################################
 def warmup_lr_scheduler(
         config : Dict[str, Dict[str, str]],  # Configurations for the scheduler

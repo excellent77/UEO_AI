@@ -4,6 +4,10 @@ import torch.nn as nn
 
 
 
+OPTIM_LIST = ("adam", "adamw", "sgd")
+
+
+
 def build_optimizer(
         optimizer_type: Literal["adam", "adamw", "sgd"], # Type of optimizer,
         model: nn.Module, # Model to optimize

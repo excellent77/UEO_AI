@@ -4,6 +4,10 @@ import torch.nn as nn
 
 
 
+LOSS_LIST = ("CrossEntropy", "BCEW", "MSE", "L1Loss")
+
+
+
 #####################################################################
 class CrossEntropyLoss(nn.Module):
     '''

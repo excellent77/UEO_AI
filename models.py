@@ -5,10 +5,6 @@ import torch.nn as nn
 
 
 
-MODEL_DIR = "model_record"
-
-
-
 class LSTM_Model(nn.Module):
 
     def __init__(self, input_size, hidden_size, num_layers, output_size):
@@ -47,6 +43,7 @@ def train_model(
         optimizer:torch.optim.Optimizer, # 優化器
         scheduler:torch.optim.lr_scheduler._LRScheduler, # 調度器
         num_epochs:int, # 訓練輪數
+        save_dir:str, #儲存資料夾
         early_stopping:int=10 # 早停輪數
     ):
     '''
@@ -59,6 +56,7 @@ def train_model(
         optimizer (torch.optim.Optimizer): 優化器。
         scheduler (torch.optim.lr_scheduler._LRScheduler): 學習率調度器。
         num_epochs (int): 訓練輪數。
+        save_dit (str) :儲存資料夾。
         early_stopping (int): 早停輪數，默認為 10。
     Yields:
         tuple: 每個 epoch 的損失歷史和學習率歷史，以及當前狀態的字符串。
@@ -101,9 +99,7 @@ def train_model(
         if avg_loss < best_loss:
             record = 0
             best_loss = avg_loss
-            if not os.path.exists(MODEL_DIR):
-                os.makedirs(MODEL_DIR)
-            torch.save(model.state_dict(), f"{MODEL_DIR}/LSTM_{timestamp}.pth")
+            torch.save(model.state_dict(), f"{save_dir}/LSTM_{timestamp}.pth")
         else:
             record += 1
             if record >= early_stopping:

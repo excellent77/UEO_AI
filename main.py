@@ -22,7 +22,6 @@ MACHINE_FEATURES = {
 }
 
 MACHINE_TYPES = list(MACHINE_FEATURES.keys())
-MODEL_PATH = os.path.join(os.getcwd(), "model_record/model.pth")
 CONFIG = {
     "warmup_scheduler": {
         "warmup_epochs": 5
@@ -38,6 +37,7 @@ CONFIG = {
         }
     }
 }
+MODEL_DIR = os.path.join(os.getcwd(), 'model_record')
 
 
 
@@ -79,7 +79,8 @@ def update_columns(file)->list:
         return [
             gr.update(choices=[], value=[]),
             gr.update(choices=[], value=[]),
-            gr.update(choices=[], value=[]), 
+            gr.update(choices=[], value=[]),
+            gr.update(interactive=False), 
             None
         ]
     
@@ -90,6 +91,7 @@ def update_columns(file)->list:
         gr.update(choices=cols, value=[]),
         gr.update(choices=cols, value=[]),
         gr.update(choices=cols, value=[]),
+        gr.update(interactive=True),
         df.head()
     ]
 
@@ -131,13 +133,14 @@ def preprocess_and_export(
     return [shape_str, X, y, scaler]
 
 def start_to_train(
-        epochs,
-        lr,
-        loss,
-        opt,
-        sch,
+        epochs:int,
+        lr:int,
+        loss:str,
+        opt:str,
+        sch:str,
         feature,
-        labels
+        labels,
+        model_path:str=None
     ):
     loss_function = losses.build_loss(loss)
     dataloader = Preprocessing.process_to_dataloader(feature, labels)
@@ -152,16 +155,25 @@ def start_to_train(
     optimizer = optimizers.build_optimizer(opt, model, lr)
     scheduler = schedulers.build_scheduler(sch, optimizer, CONFIG)
 
-    if os.path.exists(MODEL_PATH):
+    if model_path is not None:
         print("Loading pre-trained model...")
-        model.load_state_dict(torch.load(MODEL_PATH))
+        model.load_state_dict(torch.load(os.path.join(MODEL_DIR, model_path)))
 
+    status_record = f'''
+    ---Training details---
+    Model: {model.__class__.__name__}
+    Loss function: {loss}
+    Optimizer: {opt}
+    Scheduler: {sch}
+    Learning Rate: {lr}\n\n'''
+    
     for loss_hist, lr_hist, status in models.train_model(
         model=model,
         train_loader=dataloader,
         criterion=loss_function,
         optimizer=optimizer,
         scheduler=scheduler,
+        save_dir=MODEL_DIR,
         num_epochs=epochs
     ):
         # 將 loss 和 lr 歷史記錄轉換為 matplotlib 圖形
@@ -176,13 +188,17 @@ def start_to_train(
             lr_hist,
             "LR curve"
         )
-
-        yield loss_fig, lr_fig, status
+        status_record += status+'\n'
+        yield loss_fig, lr_fig, status_record
         plt.close(loss_fig)
         plt.close(lr_fig)
 
 
+
 if __name__ == "__main__":
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
+
     with gr.Blocks() as demo:
         gr.Markdown("## 耗能設備的通用性能源操作優化框架 ")
 
@@ -198,7 +214,7 @@ if __name__ == "__main__":
                 feature_cols = gr.CheckboxGroup(choices=[], label="請選擇要用於「判斷」的欄位")
                 target_cols = gr.CheckboxGroup(choices=[], label="請選擇要用於「預測」的欄位")
                 output_text = gr.Textbox(label="選擇結果", interactive=False)
-                btn_select = gr.Button("確認選擇")
+                btn_select = gr.Button("確認選擇", interactive=False)
                 btn_select.click(
                     fn=show_selection,
                     inputs=[
@@ -213,7 +229,7 @@ if __name__ == "__main__":
             with gr.Tab("資料清洗"):
                 fill_dropdown = gr.Dropdown(choices=Preprocessing.FILL_STRATEGIES, label="請選擇缺失值填補策略")
                 scale_dropdown = gr.Dropdown(choices=Preprocessing.SCALE_METHODS, label="請選擇正規化方式")
-                btn_clean = gr.Button("確認選擇")
+                btn_clean = gr.Button("確認選擇", interactive=False)
                 shape_info = gr.Textbox(label="資料 shape", interactive=False)
                 clean_feature = gr.Numpy(label="清洗後特徵資料預覽", interactive=False)
                 clean_labels = gr.Numpy(label="清洗後特徵資料預覽", interactive=False)
@@ -237,13 +253,14 @@ if __name__ == "__main__":
                 )
             
             with gr.Tab("超參數設定"):
+                pre_model_path = gr.Dropdown(choices=os.listdir(MODEL_DIR), label="請選擇預訓練模型", value=None)
                 epochs_input = gr.Number(label="訓練週期數 (Epochs)", value=50, precision=0)
                 lr_input = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-4, maximum=1e-3, step=1e-5, value=1e-3, interactive=True)
-                loss_dropdown = gr.Dropdown(choices=["CrossEntropy","BCEW","MSE","L1Loss"], label="Loss Function", value="MSE")
-                opt_dropdown = gr.Dropdown(choices=["adam", "adamw", "sgd"], label="Optimizer", value="adam")
-                sch_dropdown = gr.Dropdown(choices=["warmup_scheduler", "training_scheduler"], label="Scheduler", value="warmup_scheduler")
+                loss_dropdown = gr.Dropdown(choices=losses.LOSS_LIST, label="Loss Function", value=losses.LOSS_LIST[0])
+                opt_dropdown = gr.Dropdown(choices=optimizers.OPTIM_LIST, label="Optimizer", value=optimizers.OPTIM_LIST[0])
+                sch_dropdown = gr.Dropdown(choices=schedulers.SCH_LIST, label="Scheduler", value=schedulers.SCH_LIST[0])
 
-                btn_train = gr.Button("開始訓練模型")
+                btn_train = gr.Button("開始訓練模型", interactive=False)
                 out_text = gr.Textbox(lines=5, label="訓練進度")
                 loss_plot = gr.Plot(label="Loss 變化")
                 lr_plot = gr.Plot(label="Learning Rate 變化")
@@ -258,6 +275,7 @@ if __name__ == "__main__":
                         sch_dropdown,
                         clean_feature,
                         clean_labels,
+                        pre_model_path
                     ],
                     outputs=[loss_plot, lr_plot, out_text]
                 )
@@ -266,11 +284,22 @@ if __name__ == "__main__":
                 gr.Markdown("正在開發中...")
 
 
-        # 上傳CSV時，更新欄位選項與預覽
         csv_file.change(
             fn=update_columns,
             inputs=csv_file,
-            outputs=[datetime_col, feature_cols, target_cols, preview]
+            outputs=[datetime_col, feature_cols, target_cols, btn_select, preview]
+        )
+
+        output_text.change(
+            fn=lambda: gr.update(interactive=True),
+            inputs=[],
+            outputs=[btn_clean]
+        )
+
+        shape_info.change(
+            fn=lambda: gr.update(interactive=True),
+            inputs=[],
+            outputs=[btn_train]
         )
 
     print("Starting Gradio demo...")

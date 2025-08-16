@@ -22,21 +22,6 @@ MACHINE_FEATURES = {
 }
 
 MACHINE_TYPES = list(MACHINE_FEATURES.keys())
-CONFIG = {
-    "warmup_scheduler": {
-        "warmup_epochs": 5
-    },
-    "train_scheduler": {
-        "scheduler_type": "reduceonplateau",
-        "mode": "min",
-        "patience": 10,
-        "scheduler_args": {
-            "min_lr": 1e-6,
-            "t_0_epochs": 10,
-            "t_mult": 1
-        }
-    }
-}
 MODEL_DIR = os.path.join(os.getcwd(), 'model_record')
 
 
@@ -68,7 +53,7 @@ def create_matplotlib_figure(
 
 
 if __name__ == "__main__":
-    
+
     for mode in models.MODEL_LIST:
         # 確保模型目錄存在
         os.makedirs(os.path.join(MODEL_DIR, mode), exist_ok=True)
@@ -79,17 +64,17 @@ if __name__ == "__main__":
         with gr.Tabs(selected=0):
             
             with gr.Tab("上傳資料"):
-                csv_file = gr.File(label="上傳感測器資料（CSV）", file_types=[".csv"])
-                preview = gr.Dataframe(label="資料預覽", interactive=False)
+                file_data = gr.File(label="上傳感測器資料（CSV）", file_types=[".csv"])
+                output_load = gr.Dataframe(label="資料預覽", interactive=False)
             
             with gr.Tab("選擇欄位"):
-                machine_dropdown = gr.Dropdown(choices=MACHINE_TYPES, label="請選擇設備類別")
-                datetime_col = gr.Radio(choices=[], label="請選擇「時間戳記」的欄位")
-                feature_cols = gr.CheckboxGroup(choices=[], label="請選擇要用於「判斷」的欄位")
-                target_cols = gr.CheckboxGroup(choices=[], label="請選擇要用於「預測」的欄位")
+                DP_machine = gr.Dropdown(choices=MACHINE_TYPES, label="請選擇設備類別")
+                RD_datetime = gr.Radio(choices=[], label="請選擇「時間戳記」的欄位")
+                CBG_feature = gr.CheckboxGroup(choices=[], label="請選擇要用於「判斷」的欄位")
+                CBG_target = gr.CheckboxGroup(choices=[], label="請選擇要用於「預測」的欄位")
 
-                btn_select = gr.Button("確認選擇", interactive=False)
-                output_text = gr.Textbox(label="選擇結果", interactive=False)
+                BTN_select = gr.Button("確認選擇", interactive=False)
+                output_select = gr.Textbox(label="選擇結果", interactive=False)
                 
 
                 def show_selection(
@@ -107,23 +92,23 @@ if __name__ == "__main__":
                     result += f"用於預測欄位：{label_cols}\n"
                     return result
                 
-                btn_select.click(
+                BTN_select.click(
                     fn=show_selection,
                     inputs=[
-                        machine_dropdown,
-                        datetime_col,
-                        feature_cols,
-                        target_cols
+                        DP_machine,
+                        RD_datetime,
+                        CBG_feature,
+                        CBG_target
                     ],
-                    outputs=output_text
+                    outputs=output_select
                 )
 
             with gr.Tab("資料清洗"):
-                fill_dropdown = gr.Dropdown(choices=Preprocessing.FILL_STRATEGIES, label="請選擇缺失值填補策略")
-                scale_dropdown = gr.Dropdown(choices=Preprocessing.SCALE_METHODS, label="請選擇正規化方式")
+                DP_fill = gr.Dropdown(choices=Preprocessing.FILL_STRATEGIES, label="請選擇缺失值填補策略")
+                DP_scale = gr.Dropdown(choices=Preprocessing.SCALE_METHODS, label="請選擇正規化方式")
 
-                btn_clean = gr.Button("確認選擇", interactive=False)
-                shape_info = gr.Textbox(label="資料 shape", interactive=False)
+                BTN_clean = gr.Button("確認選擇", interactive=False)
+                output_clean = gr.Textbox(label="資料 shape", interactive=False)
                 clean_feature = gr.Numpy(label="清洗後特徵資料預覽", interactive=False)
                 clean_labels = gr.Numpy(label="清洗後特徵資料預覽", interactive=False)
 
@@ -148,18 +133,18 @@ if __name__ == "__main__":
                     shape_str = f"特徵 shape: {X.shape}; 標籤 shape: {y.shape}"
                     return [shape_str, X, y, scaler]
 
-                btn_clean.click(
+                BTN_clean.click(
                     fn=preprocess_and_export,
                     inputs=[
-                        csv_file,
-                        datetime_col,
-                        feature_cols,
-                        target_cols,
-                        fill_dropdown,
-                        scale_dropdown
+                        file_data,
+                        RD_datetime,
+                        CBG_feature,
+                        CBG_target,
+                        DP_fill,
+                        DP_scale
                     ],
                     outputs=[
-                        shape_info,
+                        output_clean,
                         clean_feature,
                         clean_labels,
                         gr.State()  # 用於保存 scaler 狀態
@@ -168,16 +153,16 @@ if __name__ == "__main__":
 
 
             with gr.Tab("超參數設定"):
-                model_name = gr.Dropdown(choices=models.MODEL_LIST, label="選擇使用模型")
-                pre_model_path = gr.Dropdown(choices=os.listdir(f"{MODEL_DIR}/{models.MODEL_LIST[0]}")+[None], label="請選擇預訓練模型", value=None)
-                epochs_input = gr.Number(label="訓練週期數 (Epochs)", value=50, precision=0)
-                lr_input = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-4, maximum=1e-3, step=1e-5, value=1e-3, interactive=True)
-                loss_dropdown = gr.Dropdown(choices=losses.LOSS_LIST, label="Loss Function", value=losses.LOSS_LIST[0])
-                opt_dropdown = gr.Dropdown(choices=optimizers.OPTIM_LIST, label="Optimizer", value=optimizers.OPTIM_LIST[0])
-                sch_dropdown = gr.Dropdown(choices=schedulers.SCH_LIST, label="Scheduler", value=schedulers.SCH_LIST[0])
+                DP_model_name = gr.Dropdown(choices=models.MODEL_LIST, label="選擇使用模型")
+                DP_pre_model = gr.Dropdown(choices=os.listdir(f"{MODEL_DIR}/{models.MODEL_LIST[0]}")+[None], label="請選擇預訓練模型", value=None)
+                NUM_epochs = gr.Number(label="訓練週期數 (Epochs)", value=50, precision=0)
+                NUM_lr = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-4, maximum=1e-3, step=1e-5, value=1e-3, interactive=True)
+                DP_loss = gr.Dropdown(choices=losses.LOSS_LIST, label="Loss Function", value=losses.LOSS_LIST[0])
+                DP_opt = gr.Dropdown(choices=optimizers.OPTIM_LIST, label="Optimizer", value=optimizers.OPTIM_LIST[0])
+                DP_sch = gr.Dropdown(choices=schedulers.SCH_LIST, label="Scheduler", value=schedulers.SCH_LIST[0])
 
-                btn_train = gr.Button("開始訓練模型", interactive=False)
-                out_text = gr.Textbox(lines=5, label="訓練進度")
+                BTN_train = gr.Button("開始訓練模型", interactive=False)
+                output_hyp = gr.Textbox(lines=5, label="訓練進度")
                 loss_plot = gr.Plot(label="Loss 變化")
                 lr_plot = gr.Plot(label="Learning Rate 變化")
 
@@ -223,7 +208,7 @@ if __name__ == "__main__":
                     )
                     
                     optimizer = optimizers.build_optimizer(opt, model, lr)
-                    scheduler = schedulers.build_scheduler(sch, optimizer, CONFIG)
+                    scheduler = schedulers.build_scheduler(sch, optimizer)
                     
 
                     if type(pre_model_name) == str and pre_model_name:
@@ -264,20 +249,20 @@ if __name__ == "__main__":
                         plt.close(loss_fig)
                         plt.close(lr_fig)
 
-                btn_train.click(
+                BTN_train.click(
                     fn=start_to_train,
                     inputs=[
-                        epochs_input,
-                        lr_input,
-                        loss_dropdown,
-                        opt_dropdown,
-                        sch_dropdown,
+                        NUM_epochs,
+                        NUM_lr,
+                        DP_loss,
+                        DP_opt,
+                        DP_sch,
                         clean_feature,
                         clean_labels,
-                        model_name,
-                        pre_model_path
+                        DP_model_name,
+                        DP_pre_model
                     ],
-                    outputs=[loss_plot, lr_plot, out_text]
+                    outputs=[loss_plot, lr_plot, output_hyp]
                 )
                         
             with gr.Tab("規劃求解器"):
@@ -315,10 +300,10 @@ if __name__ == "__main__":
                 df.head()
             ]
         
-        csv_file.change(
+        file_data.change(
             fn=update_columns,
-            inputs=csv_file,
-            outputs=[datetime_col, feature_cols, target_cols, btn_select, preview]
+            inputs=file_data,
+            outputs=[RD_datetime, CBG_feature, CBG_target, BTN_select, output_load]
         )
 
 
@@ -327,24 +312,31 @@ if __name__ == "__main__":
             files = [None] + os.listdir(save_dir)
             return gr.update(choices=files, value=None)
                 
-        model_name.change(
+        DP_model_name.change(
             fn=get_model_files,
-            inputs=model_name,
-            outputs=pre_model_path
+            inputs=DP_model_name,
+            outputs=DP_pre_model
+        )
+        
+
+        output_select.change(
+            fn=lambda: gr.update(interactive=True),
+            inputs=[],
+            outputs=[BTN_clean]
         )
 
 
-        output_text.change(
+        output_clean.change(
             fn=lambda: gr.update(interactive=True),
             inputs=[],
-            outputs=[btn_clean]
+            outputs=[BTN_train]
         )
 
 
-        shape_info.change(
-            fn=lambda: gr.update(interactive=True),
-            inputs=[],
-            outputs=[btn_train]
+        output_hyp.change(
+            fn=lambda model_name: gr.update(choices=os.listdir(os.path.join(MODEL_DIR, model_name))+[None], value=None),
+            inputs=[DP_model_name],
+            outputs=[DP_pre_model]
         )
 
     print("Starting Gradio demo...")

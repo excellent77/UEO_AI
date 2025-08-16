@@ -118,6 +118,7 @@ def preprocess_for_lstm(
 
     return X, y, scaler
 
+
 def process_to_dataloader(
         X:pd.DataFrame, # 特徵數據
         y:pd.DataFrame,

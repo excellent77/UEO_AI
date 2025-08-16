@@ -107,5 +107,3 @@ def build_loss(
         return L1Loss(*args, **kwargs)
     else:
         raise ValueError(f"Unsupported loss type: {loss_type}")
-
-    

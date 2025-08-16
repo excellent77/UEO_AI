@@ -42,9 +42,9 @@ MODEL_DIR = os.path.join(os.getcwd(), 'model_record')
 
 
 def create_matplotlib_figure(
-        x,
-        y,
-        title
+        x:list, # x 軸數據
+        y:list, # y 軸數據
+        title:str # 圖形標題
     )-> plt.Figure:
     '''
     根據 x 和 y 數據生成 matplotlib 圖形，並設置標題和標籤。
@@ -65,139 +65,13 @@ def create_matplotlib_figure(
 
     return fig
 
-def update_columns(file)->list:
-    """
-    依據上傳的 CSV 檔案，讀取欄位並更新前端選單選項，若無檔案則重置欄位。
-    傳回:
-        - 時間欄位單選選單 (Radio)
-        - 判斷欄位多選 (CheckboxGroup)
-        - 預測欄位多選 (CheckboxGroup)
-        - CSV 前五列資料預覽 (DataFrame)
-    """
-    if file is None:
-        # 無檔案時, 回傳空選項及無預覽
-        return [
-            gr.update(choices=[], value=[]),
-            gr.update(choices=[], value=[]),
-            gr.update(choices=[], value=[]),
-            gr.update(interactive=False), 
-            None
-        ]
-    
-    df = pd.read_csv(file.name, encoding="utf-8")
-    cols = df.columns.tolist()
-    # CheckboxGroup 用 gr.update，Dataframe 傳資料
-    return [
-        gr.update(choices=cols, value=[]),
-        gr.update(choices=cols, value=[]),
-        gr.update(choices=cols, value=[]),
-        gr.update(interactive=True),
-        df.head()
-    ]
-
-
-def show_selection(
-        machine:str, # 選擇的設備類型
-        datetime_col:str, # 時間欄位名稱
-        train_cols:list, # 用於判斷的特徵欄位
-        label_cols:list  # 用於預測的標籤欄位
-    )->str:
-    """
-    組裝及回傳當前欄位及設備的使用者選擇摘要，於 Gradio Textbox 顯示。
-    """
-    result = f"已選設備：{machine}\n"
-    result += f"時間欄位：{datetime_col}\n"
-    result += f"用於判斷欄位：{train_cols}\n"
-    result += f"用於預測欄位：{label_cols}\n"
-    return result
-
-
-def preprocess_and_export(
-        df:pd.DataFrame, # 原始資料
-        datetime_col:str, # 時間欄位名稱
-        feature_cols:list, # 特徵(輸入)欄位清單
-        target_cols:list, # 標籤(預測目標)欄位清單
-        fill_strategy:str, # 缺失值填補策略
-        scale_method:str # 特徵正規化方式
-    )->list:
-    """
-    調用自訂 Preprocessing 模組的預處理流程，產生 LSTM 可用的特徵與標籤及標準化器。
-    傳回:
-        [資料形狀資訊, X特徵, y標籤, 標準化器物件]
-    """
-    # 進行資料清洗與轉換
-    X, y, scaler = Preprocessing.preprocess_for_lstm(
-        df, datetime_col, feature_cols, target_cols, fill_strategy, scale_method
-    )
-    shape_str = f"特徵 shape: {X.shape}; 標籤 shape: {y.shape}"
-    return [shape_str, X, y, scaler]
-
-def start_to_train(
-        epochs:int,
-        lr:int,
-        loss:str,
-        opt:str,
-        sch:str,
-        feature,
-        labels,
-        model_path:str=None
-    ):
-    loss_function = losses.build_loss(loss)
-    dataloader = Preprocessing.process_to_dataloader(feature, labels)
-
-    model = models.LSTM_Model(
-        input_size=int(feature.shape[-1]),
-        hidden_size=64,
-        num_layers=2,
-        output_size=int(labels.shape[-1])
-    )
-    
-    optimizer = optimizers.build_optimizer(opt, model, lr)
-    scheduler = schedulers.build_scheduler(sch, optimizer, CONFIG)
-
-    if model_path is not None:
-        print("Loading pre-trained model...")
-        model.load_state_dict(torch.load(os.path.join(MODEL_DIR, model_path)))
-
-    status_record = f'''
-    ---Training details---
-    Model: {model.__class__.__name__}
-    Loss function: {loss}
-    Optimizer: {opt}
-    Scheduler: {sch}
-    Learning Rate: {lr}\n\n'''
-    
-    for loss_hist, lr_hist, status in models.train_model(
-        model=model,
-        train_loader=dataloader,
-        criterion=loss_function,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        save_dir=MODEL_DIR,
-        num_epochs=epochs
-    ):
-        # 將 loss 和 lr 歷史記錄轉換為 matplotlib 圖形
-        loss_fig = create_matplotlib_figure(
-            list(range(1, len(loss_hist)+1)),
-            loss_hist,
-            "Loss curve"
-        )
-
-        lr_fig = create_matplotlib_figure(
-            list(range(1, len(lr_hist)+1)),
-            lr_hist,
-            "LR curve"
-        )
-        status_record += status+'\n'
-        yield loss_fig, lr_fig, status_record
-        plt.close(loss_fig)
-        plt.close(lr_fig)
-
 
 
 if __name__ == "__main__":
-    if not os.path.exists(MODEL_DIR):
-        os.makedirs(MODEL_DIR)
+    
+    for mode in models.MODEL_LIST:
+        # 確保模型目錄存在
+        os.makedirs(os.path.join(MODEL_DIR, mode), exist_ok=True)
 
     with gr.Blocks() as demo:
         gr.Markdown("## 耗能設備的通用性能源操作優化框架 ")
@@ -213,8 +87,26 @@ if __name__ == "__main__":
                 datetime_col = gr.Radio(choices=[], label="請選擇「時間戳記」的欄位")
                 feature_cols = gr.CheckboxGroup(choices=[], label="請選擇要用於「判斷」的欄位")
                 target_cols = gr.CheckboxGroup(choices=[], label="請選擇要用於「預測」的欄位")
-                output_text = gr.Textbox(label="選擇結果", interactive=False)
+
                 btn_select = gr.Button("確認選擇", interactive=False)
+                output_text = gr.Textbox(label="選擇結果", interactive=False)
+                
+
+                def show_selection(
+                    machine:str, # 選擇的設備類型
+                    datetime_col:str, # 時間欄位名稱
+                    train_cols:list, # 用於判斷的特徵欄位
+                    label_cols:list  # 用於預測的標籤欄位
+                )->str:
+                    """
+                    組裝及回傳當前欄位及設備的使用者選擇摘要，於 Gradio Textbox 顯示。
+                    """
+                    result = f"已選設備：{machine}\n"
+                    result += f"時間欄位：{datetime_col}\n"
+                    result += f"用於判斷欄位：{train_cols}\n"
+                    result += f"用於預測欄位：{label_cols}\n"
+                    return result
+                
                 btn_select.click(
                     fn=show_selection,
                     inputs=[
@@ -229,10 +121,32 @@ if __name__ == "__main__":
             with gr.Tab("資料清洗"):
                 fill_dropdown = gr.Dropdown(choices=Preprocessing.FILL_STRATEGIES, label="請選擇缺失值填補策略")
                 scale_dropdown = gr.Dropdown(choices=Preprocessing.SCALE_METHODS, label="請選擇正規化方式")
+
                 btn_clean = gr.Button("確認選擇", interactive=False)
                 shape_info = gr.Textbox(label="資料 shape", interactive=False)
                 clean_feature = gr.Numpy(label="清洗後特徵資料預覽", interactive=False)
                 clean_labels = gr.Numpy(label="清洗後特徵資料預覽", interactive=False)
+
+
+                def preprocess_and_export(
+                    df:pd.DataFrame, # 原始資料
+                    datetime_col:str, # 時間欄位名稱
+                    feature_cols:list, # 特徵(輸入)欄位清單
+                    target_cols:list, # 標籤(預測目標)欄位清單
+                    fill_strategy:str, # 缺失值填補策略
+                    scale_method:str # 特徵正規化方式
+                )->list:
+                    """
+                    調用自訂 Preprocessing 模組的預處理流程，產生 LSTM 可用的特徵與標籤及標準化器。
+                    傳回:
+                        [資料形狀資訊, X特徵, y標籤, 標準化器物件]
+                    """
+                    # 進行資料清洗與轉換
+                    X, y, scaler = Preprocessing.preprocess_for_lstm(
+                        df, datetime_col, feature_cols, target_cols, fill_strategy, scale_method
+                    )
+                    shape_str = f"特徵 shape: {X.shape}; 標籤 shape: {y.shape}"
+                    return [shape_str, X, y, scaler]
 
                 btn_clean.click(
                     fn=preprocess_and_export,
@@ -251,9 +165,11 @@ if __name__ == "__main__":
                         gr.State()  # 用於保存 scaler 狀態
                     ]
                 )
-            
+
+
             with gr.Tab("超參數設定"):
-                pre_model_path = gr.Dropdown(choices=os.listdir(MODEL_DIR), label="請選擇預訓練模型", value=None)
+                model_name = gr.Dropdown(choices=models.MODEL_LIST, label="選擇使用模型")
+                pre_model_path = gr.Dropdown(choices=os.listdir(f"{MODEL_DIR}/{models.MODEL_LIST[0]}")+[None], label="請選擇預訓練模型", value=None)
                 epochs_input = gr.Number(label="訓練週期數 (Epochs)", value=50, precision=0)
                 lr_input = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-4, maximum=1e-3, step=1e-5, value=1e-3, interactive=True)
                 loss_dropdown = gr.Dropdown(choices=losses.LOSS_LIST, label="Loss Function", value=losses.LOSS_LIST[0])
@@ -265,6 +181,89 @@ if __name__ == "__main__":
                 loss_plot = gr.Plot(label="Loss 變化")
                 lr_plot = gr.Plot(label="Learning Rate 變化")
 
+
+                def start_to_train(
+                    epochs:int, # 訓練週期數
+                    lr:int, # 學習率
+                    loss:str, # 損失函數
+                    opt:str, # 優化器
+                    sch:str, # 調度器
+                    feature, # 特徵資料
+                    labels, # 標籤資料
+                    model_name:str, # 模型名稱
+                    pre_model_name:str=None # 預訓練模型路徑 (可選)
+                ):
+                    """
+                    開始訓練模型，並返回訓練過程中的損失和學習率曲線。
+                    參數:
+                        - epochs: 訓練週期數
+                        - lr: 學習率
+                        - loss: 損失函數名稱
+                        - opt: 優化器名稱
+                        - sch: 調度器名稱
+                        - feature: 特徵資料
+                        - labels: 標籤資料
+                        - model_name: 模型名稱
+                        - pre_model_name: 預訓練模型路徑 (可選)
+                    返回:
+                        - loss_fig: 損失曲線圖形
+                        - lr_fig: 學習率曲線圖形
+                        - status_record: 訓練狀態記錄
+                    """
+                    save_dir = os.path.join(MODEL_DIR, model_name)
+                    loss_function = losses.build_loss(loss)
+                    dataloader = Preprocessing.process_to_dataloader(feature, labels)
+
+                    model = models.build_model(
+                        model_name=model_name,
+                        input_size=int(feature.shape[-1]),
+                        hidden_size=64,
+                        num_layers=2,
+                        output_size=int(labels.shape[-1])
+                    )
+                    
+                    optimizer = optimizers.build_optimizer(opt, model, lr)
+                    scheduler = schedulers.build_scheduler(sch, optimizer, CONFIG)
+                    
+
+                    if type(pre_model_name) == str and pre_model_name:
+                        print("Loading pre-trained model...")
+                        model.load_state_dict(torch.load(os.path.join(save_dir, pre_model_name)))
+
+                    status_record = f'''
+                    ---Training details---
+                    Model: {model.__class__.__name__}
+                    Loss function: {loss}
+                    Optimizer: {opt}
+                    Scheduler: {sch}
+                    Learning Rate: {lr}\n\n'''
+                    
+                    for loss_hist, lr_hist, status in models.train_model(
+                        model=model,
+                        train_loader=dataloader,
+                        criterion=loss_function,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        save_dir=save_dir,
+                        num_epochs=epochs
+                    ):
+                        # 將 loss 和 lr 歷史記錄轉換為 matplotlib 圖形
+                        loss_fig = create_matplotlib_figure(
+                            list(range(1, len(loss_hist)+1)),
+                            loss_hist,
+                            "Loss curve"
+                        )
+
+                        lr_fig = create_matplotlib_figure(
+                            list(range(1, len(lr_hist)+1)),
+                            lr_hist,
+                            "LR curve"
+                        )
+                        status_record += status+'\n'
+                        yield loss_fig, lr_fig, status_record
+                        plt.close(loss_fig)
+                        plt.close(lr_fig)
+
                 btn_train.click(
                     fn=start_to_train,
                     inputs=[
@@ -275,6 +274,7 @@ if __name__ == "__main__":
                         sch_dropdown,
                         clean_feature,
                         clean_labels,
+                        model_name,
                         pre_model_path
                     ],
                     outputs=[loss_plot, lr_plot, out_text]
@@ -284,17 +284,62 @@ if __name__ == "__main__":
                 gr.Markdown("正在開發中...")
 
 
+
+        def update_columns(file)->list:
+            """
+            依據上傳的 CSV 檔案，讀取欄位並更新前端選單選項，若無檔案則重置欄位。
+            傳回:
+                - 時間欄位單選選單 (Radio)
+                - 判斷欄位多選 (CheckboxGroup)
+                - 預測欄位多選 (CheckboxGroup)
+                - CSV 前五列資料預覽 (DataFrame)
+            """
+            if file is None:
+                # 無檔案時, 回傳空選項及無預覽
+                return [
+                    gr.update(choices=[], value=[]),
+                    gr.update(choices=[], value=[]),
+                    gr.update(choices=[], value=[]),
+                    gr.update(interactive=False), 
+                    None
+                ]
+            
+            df = pd.read_csv(file.name, encoding="utf-8")
+            cols = df.columns.tolist()
+            # CheckboxGroup 用 gr.update，Dataframe 傳資料
+            return [
+                gr.update(choices=cols, value=[]),
+                gr.update(choices=cols, value=[]),
+                gr.update(choices=cols, value=[]),
+                gr.update(interactive=True),
+                df.head()
+            ]
+        
         csv_file.change(
             fn=update_columns,
             inputs=csv_file,
             outputs=[datetime_col, feature_cols, target_cols, btn_select, preview]
         )
 
+
+        def get_model_files(model_name):
+            save_dir = os.path.join(MODEL_DIR, model_name)
+            files = [None] + os.listdir(save_dir)
+            return gr.update(choices=files, value=None)
+                
+        model_name.change(
+            fn=get_model_files,
+            inputs=model_name,
+            outputs=pre_model_path
+        )
+
+
         output_text.change(
             fn=lambda: gr.update(interactive=True),
             inputs=[],
             outputs=[btn_clean]
         )
+
 
         shape_info.change(
             fn=lambda: gr.update(interactive=True),

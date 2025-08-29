@@ -127,11 +127,11 @@ if __name__ == "__main__":
                         [資料形狀資訊, X特徵, y標籤, 標準化器物件]
                     """
                     # 進行資料清洗與轉換
-                    X, y, scaler = Preprocessing.preprocess_for_lstm(
+                    X, y, *scalers = Preprocessing.preprocess_for_lstm(
                         df, datetime_col, feature_cols, target_cols, fill_strategy, scale_method
                     )
                     shape_str = f"特徵 shape: {X.shape}; 標籤 shape: {y.shape}"
-                    return [shape_str, X, y, scaler]
+                    return [shape_str, X, y, scalers]
 
                 BTN_clean.click(
                     fn=preprocess_and_export,

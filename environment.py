@@ -1,0 +1,405 @@
+import os
+import numpy as np
+import pandas as pd
+import Preprocessing
+import torch
+from tqdm import tqdm
+import time
+import wandb
+import torch.nn as nn
+import sklearn.metrics as metrics
+import torch.nn.functional as F
+
+
+
+# 狀態向量示例：選取室內與外部環境多項溫度、濕度、電表功率等
+STATE_KEYS = [
+    "dP_Sys", "dP_Head",
+    "Weather.T", "Weather.H",
+    "T_CHW_out",  "T_CHW_in",
+    "T_CW_out", "T_CW_in",
+    "F_CHW_in", "F_CW_in",
+    "dT_PowerOn", "dT_Shutdown",
+    "Load", "Signal", "Status",
+    "I_left", "I_right",
+    "Status_left", "Status_right",
+    "VLN_R", "VLN_S", "VLN_T", "VLN_avg",
+    "I_R", "I_S", "I_T", "I_avg",
+    "PF_avg",
+    "KW_tot", "Kvar_tot", "KVA_tot"
+
+]
+
+# 動作定義示例：冰水機溫度設定點和主機啟停信號
+ACTION_KEYS = [
+    "T_SP"
+]
+
+REWARD_KEYS = [
+    "PF_avg",
+    "KW_tot", "Kvar_tot"
+]
+
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+LEARNING_RATE = 1e-4
+EPOCHS = 100
+WARMUP_EPOCHS = 30  # 預熱階段的epoch數
+BATCH_SIZE = 128
+SEQUENCE_LENGTH = 60
+PRE_TRAINED_MODEL = r""  # 預訓練模型路徑，如果有的話
+MODEL_TYPE = "Trans64_out64"
+KEY_WORDS = ['Kvar_tot', 'KW_tot', 'PF_avg']
+
+
+
+class Predict_Model(nn.Module):
+    def __init__(self, input_size, output_size, lstm_hidden_size=64, dense_units=64, dropout=0.2):
+        super(Predict_Model, self).__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=lstm_hidden_size,
+            num_layers=2,
+            batch_first=True,
+            dropout=dropout
+        )
+
+        self.dense1 = nn.Linear(lstm_hidden_size, dense_units)
+        self.bn1 = nn.BatchNorm1d(dense_units)          # 第一層BatchNorm
+
+        self.activation = nn.LeakyReLU()
+        self.drop = nn.Dropout(dropout)
+        self.output_layer = nn.Linear(dense_units, output_size)
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        out = out[:, -1, :]            # 取最後時間步輸出
+
+        out = self.dense1(out)
+        out = self.bn1(out)                # BatchNorm
+        out = self.activation(out)
+        out = self.drop(out)
+
+        out = self.output_layer(out)      # 輸出層無激活函數
+
+        return out
+
+class Transformer_Model(nn.Module):
+    def __init__(self, input_size, output_size, hidden_size=64, num_layers=2, nhead=4, dense_units=64, dropout=0.1):
+        super(Transformer_Model, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        
+        # 將輸入投影到 hidden_size 方便給 Transformer
+        self.input_fc = nn.Linear(input_size, hidden_size)
+        
+        # 位置編碼 (可簡單用 learnable 或 sinusoidal)
+        self.pos_encoder = PositionalEncoding(hidden_size, dropout)
+        
+        # Transformer Encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size,
+            nhead=nhead,
+            dropout=dropout,
+            batch_first=False  # 要配合下面轉置
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers
+        )
+        
+        # 輸出層
+        self.fc_out = nn.Sequential(
+            nn.Linear(hidden_size, dense_units),
+            nn.BatchNorm1d(dense_units),
+            nn.LeakyReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dense_units, output_size)
+        )
+
+    def forward(self, x):
+        # x: [batch, seq_len, input_size]
+        x = self.input_fc(x)                    # [batch, seq_len, hidden_size]
+        x = x.transpose(0,1)                    # [seq_len, batch, hidden_size] for transformer
+        x = self.pos_encoder(x)                 # 增加位置資訊
+        
+        out = self.transformer_encoder(x)       # [seq_len, batch, hidden_size]
+        
+        # 取最後一個時間步
+        out = out[-1, :, :]                     # [batch, hidden_size]
+        out = self.fc_out(out)                  # [batch, output_size]
+        return out
+
+class PositionalEncoding(nn.Module):
+    # 經典 sine-cosine 位置編碼
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(1)  # [max_len, 1, d_model]
+        self.register_buffer('pe', pe)
+    def forward(self, x):
+        # x: [seq_len, batch, dim]
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
+
+def train_model(
+        model,
+        train_loader,
+        val_loader,
+        criterion,
+        optimizer,
+        scheduler,
+        scaler,
+        main_scheduler,
+        early_stopping=10
+    ):
+
+    timestamp = time.strftime('%Y%m%d-%H%M%S')
+    wandb.init(
+        project="UEO_AI environment",
+        name=f"Training_{MODEL_TYPE}_{timestamp}",
+        config={
+            "learning_rate": LEARNING_RATE,
+            "epochs": EPOCHS,
+            "warmup_epochs": WARMUP_EPOCHS,
+            "batch_size": BATCH_SIZE,
+            "sequence_length": SEQUENCE_LENGTH,
+            "device": DEVICE
+        }
+    )
+
+    for epoch in tqdm(range(EPOCHS), desc="Training Epochs"):
+
+        model.train()
+        best_loss = float('inf')
+        record = 0
+        total_loss = 0.0
+
+        for data, target in train_loader:
+            data, target = data.to(DEVICE), target.to(DEVICE)
+            optimizer.zero_grad()
+            output = model(data)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        # 訓練一輪後做：驗證集評價
+        val_loss = evaluate_model(model, val_loader, criterion)
+        val_r2 = evaluate_r2(model, val_loader, scaler)
+
+        # 檢查是否早停
+        if val_loss < best_loss:
+            best_loss = val_loss
+            torch.save(model.state_dict(), f'model_record/environment/model_{MODEL_TYPE}_{timestamp}.pth')
+            record = 0
+        else:
+            record += 1
+            if record >= early_stopping:
+                print(f'Early stopping at epoch {epoch+1}')
+                break
+
+
+        # === 調整學習率 ===
+        if epoch < WARMUP_EPOCHS:
+            scheduler.step()
+        else:
+            main_scheduler.step(val_loss)
+        
+
+        wandb.log({
+            "epoch": epoch + 1,
+            "loss": total_loss / len(train_loader),
+            "val_loss": val_loss,
+            "val_r2":val_r2,
+            "learning_rate": optimizer.param_groups[0]['lr']
+        })
+
+    wandb.finish()
+
+
+def predict(model, data_loader, scaler):
+    model.eval()
+    predictions = []
+    real_values = []
+    with torch.no_grad():
+        for data, target in data_loader:
+            data = data.to(DEVICE)
+            output = model(data)
+            predictions.append(scaler.inverse_transform(output.cpu().numpy()))
+            real_values.append(scaler.inverse_transform(target.cpu().numpy()))
+    
+    return np.concatenate(predictions, axis=0), np.concatenate(real_values, axis=0)
+
+
+def evaluate_model(model, data_loader, criterion):
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for data, target in data_loader:
+            data, target = data.to(DEVICE), target.to(DEVICE)
+            output = model(data)
+            loss = criterion(output, target)
+            total_loss += loss.item()
+    
+    return total_loss/len(data_loader)
+
+def evaluate_r2(model, data_loader, scaler):
+    predictions, real_values = predict(model, data_loader, scaler)
+    return metrics.r2_score(real_values, predictions)
+
+
+
+if __name__ == "__main__":
+    os.makedirs('model_record/environment', exist_ok=True)
+
+
+    ## 資料處理 ##
+    train_csv_file = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train.csv'))
+    test_csv_file = pd.read_csv(os.path.join(os.getcwd(), 'data', 'test.csv'))
+    val_csv_file = pd.read_csv(os.path.join(os.getcwd(), 'data', 'val.csv'))
+
+
+    
+    state_cols = []
+    action_cols = []
+    reward_cols = []
+    # 假設特徵列是所有非目標列
+    for col in train_csv_file.columns:
+
+        if col == 'DateTime':
+            continue
+
+        if any([col.endswith(i) for i in REWARD_KEYS]):
+            reward_cols.append(col)
+
+        if any([col.endswith(i) for i in ACTION_KEYS]):
+            action_cols.append(col)
+
+        if any([col.endswith(i) for i in STATE_KEYS]):
+            state_cols.append(col)
+
+
+    print("predict targets: ", state_cols+action_cols)
+    train_feature, train_target, x_scaler, y_scaler = Preprocessing.preprocess_for_lstm(
+        train_csv_file,
+        datetime_col='DateTime',
+        feature_cols=state_cols+action_cols,
+        target_cols=reward_cols,
+        fill_strategy='mean',
+        scale_method='minmax',
+        sequence_length=SEQUENCE_LENGTH
+    )
+
+    val_feature, val_target, _, _ = Preprocessing.preprocess_for_lstm(
+        val_csv_file,
+        datetime_col='DateTime',
+        feature_cols=state_cols+action_cols,
+        target_cols=reward_cols,
+        fill_strategy='mean',
+        scale_method='minmax',
+        sequence_length=SEQUENCE_LENGTH,
+        apply_scaler={
+            "feature":x_scaler,
+            "target":y_scaler
+        }  # 使用訓練集的標準化器
+    )
+
+    test_feature, test_target, _, _ = Preprocessing.preprocess_for_lstm(
+        test_csv_file,
+        datetime_col='DateTime',
+        feature_cols=state_cols+action_cols,
+        target_cols=reward_cols,
+        fill_strategy='mean',
+        scale_method='minmax',
+        sequence_length=SEQUENCE_LENGTH,
+        apply_scaler={
+            "feature":x_scaler,
+            "target":y_scaler
+        }  # 使用訓練集的標準化器
+    )
+
+
+    train_loader = Preprocessing.process_to_dataloader(
+        train_feature,
+        train_target,
+        batch_size=BATCH_SIZE
+    )
+
+    val_loader = Preprocessing.process_to_dataloader(
+        val_feature,
+        val_target,
+        batch_size=BATCH_SIZE
+    )
+    
+    test_loader = Preprocessing.process_to_dataloader(
+        test_feature,
+        test_target,
+        batch_size=BATCH_SIZE
+    )
+    print("train data shape: ", train_feature.shape, train_target.shape)
+    print("test data shape: ", test_feature.shape, test_target.shape)
+    print("val data shape: ", val_feature.shape, val_target.shape)
+
+    
+
+    ## 模型訓練 ##
+    model = Transformer_Model(
+        input_size=len(state_cols+action_cols),
+        output_size=len(reward_cols)
+    ).to(DEVICE)
+
+    model.load_state_dict(torch.load(PRE_TRAINED_MODEL)) if os.path.exists(PRE_TRAINED_MODEL) else None
+
+    criterion = torch.nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-5)
+    ## Warm_up Block ##
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1e-3,     # 從 lr * 1e-3 開始
+        end_factor=1.0,        # 線性增加到 lr * 1.0（即 LEARNING_RATE）
+        total_iters=WARMUP_EPOCHS
+    )
+
+    # Main Scheduler (ReduceLROnPlateau)
+    main_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3, 
+        #verbose=True
+    )
+
+    # Combine with SequentialLR (但要包一層 LambdaLR 來轉接 ReduceLROnPlateau)
+    scheduler = torch.optim.lr_scheduler.SequentialLR (
+        optimizer,
+        schedulers=[warmup_scheduler, torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1.0)],
+        milestones=[WARMUP_EPOCHS]
+    )
+    
+    train_model(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        criterion=criterion,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        main_scheduler=main_scheduler,
+        scaler=y_scaler,
+        early_stopping=10
+    )
+    
+    ## 模型評估 ##
+    print("train loss: ", evaluate_model(model, train_loader, criterion))
+    print("train r2", evaluate_r2(model, train_loader, y_scaler))
+
+    print("test loss: ", evaluate_model(model, test_loader, criterion))
+    print("test r2", evaluate_r2(model, test_loader, y_scaler))
+
+    print("val loss: ", evaluate_model(model, val_loader, criterion))
+    print("val r2", evaluate_r2(model, val_loader, y_scaler))
+    

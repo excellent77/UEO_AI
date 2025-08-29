@@ -22,16 +22,49 @@ def clean_data(
     傳回:
         - 清洗後的 DataFrame
     '''
-    df[datetime_col] = pd.to_datetime(df[datetime_col])
+    df[datetime_col] = pd.to_datetime(df[datetime_col], format='mixed')
     df = df.sort_values(by=datetime_col)
     df = df.reset_index(drop=True)
     return df
 
 
+def remove_outliers_iqr(df: pd.DataFrame, factor: float = 1.5) -> pd.DataFrame:
+    """
+    利用IQR方法替換DataFrame中數值欄位的離群值。
+    離群值定義:
+        小於 Q1 - factor * IQR 或大於 Q3 + factor * IQR
+    用欄位中位數替代離群值。
+    
+    參數:
+        df: 輸入的DataFrame
+        factor: 控制離群值範圍的因子，預設1.5
+    
+    回傳:
+        替換離群值後的DataFrame
+    """
+    df_clean = df.copy()
+    numeric_cols = df_clean.select_dtypes(include=['number']).columns
+    
+    for col in numeric_cols:
+        Q1 = df_clean[col].quantile(0.25)
+        Q3 = df_clean[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - factor * IQR
+        upper_bound = Q3 + factor * IQR
+        median = df_clean[col].median()
+
+        # 找出離群值的位置
+        outliers = (df_clean[col] < lower_bound) | (df_clean[col] > upper_bound)
+        # 用中位數替換離群值
+        df_clean.loc[outliers, col] = median
+
+    return df_clean
+
+
 def fill_missing(
-        df:pd.DataFrame, # 原始資料
-        strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean'# 缺失值填補策略
-    )->pd.DataFrame: 
+        df: pd.DataFrame,  # 原始資料
+        strategy: Literal['mean', 'median', 'most_frequent', 'constant']='mean'  # 缺失值填補策略
+    ) -> pd.DataFrame:
     '''
     填補缺失值，僅對數值型欄位進行填補。
     傳回:
@@ -39,21 +72,30 @@ def fill_missing(
     '''
     # 找出數值型欄位
     numeric_cols = df.select_dtypes(include=['number']).columns
+    
+    # 將 inf 和 -inf 替換為 NaN，避免 imputer 出錯
+    df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
+    
     # 只對數值型欄位做補值
     imputer = SimpleImputer(strategy=strategy)
     df_numeric = pd.DataFrame(imputer.fit_transform(df[numeric_cols]), columns=numeric_cols, index=df.index)
+    
     # 其他欄位（如時間）直接保留
     df_others = df.drop(columns=numeric_cols)
+    
     # 合併
     df_imputed = pd.concat([df_others, df_numeric], axis=1)
+    
     # 保持原本欄位順序
     df_imputed = df_imputed[df.columns]
+    
     return df_imputed
 
 
 def scale_features(
         df:pd.DataFrame, # 原始資料
-        method:Literal['minmax', 'standard']='minmax' # 特徵正規化方式，可選 'minmax', 'standard'
+        method:Literal['minmax', 'standard']='minmax', # 特徵正規化方式，可選 'minmax', 'standard'
+        scaler:object=None # 已存在的標準化器物件，若有則使用
         )-> tuple:
     '''
     對數值型欄位進行特徵縮放。
@@ -63,14 +105,19 @@ def scale_features(
     '''
     # 只選擇數值型欄位
     numeric_cols = df.select_dtypes(include=['number']).columns
-    if method == 'minmax':
-        scaler = MinMaxScaler()
-    elif method == 'standard':
-        scaler = StandardScaler()
+    if scaler is None:
+        if method == 'minmax':
+            scaler = MinMaxScaler()
+        elif method == 'standard':
+            scaler = StandardScaler()
+        else:
+            raise ValueError("method must be 'minmax' or 'standard'")
+        
+        scaled_numeric = scaler.fit_transform(df[numeric_cols])
     else:
-        raise ValueError("method must be 'minmax' or 'standard'")
-    # 只對數值欄位做縮放
-    scaled_numeric = scaler.fit_transform(df[numeric_cols])
+        scaled_numeric = scaler.transform(df[numeric_cols])
+
+    
     df_scaled_numeric = pd.DataFrame(scaled_numeric, columns=numeric_cols, index=df.index)
     # 其他欄位（如時間）保留
     df_others = df.drop(columns=numeric_cols)
@@ -87,7 +134,8 @@ def preprocess_for_lstm(
         target_cols:list, # 標籤(預測目標)欄位清單
         fill_strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean', # 缺失值填補策略
         scale_method:Literal['minmax', 'standard']='minmax', # 特徵正規化方式
-        sequence_length:int=24 # LSTM 序列長度
+        sequence_length:int=24, # LSTM 序列長度
+        apply_scaler:dict={}
     )->tuple:
     '''
     對資料進行預處理，生成 LSTM 所需的特徵和標籤。
@@ -105,24 +153,41 @@ def preprocess_for_lstm(
             raise ValueError("Input must be a pandas DataFrame or a file-like object.")
 
     df = clean_data(df, datetime_col)
+    df = remove_outliers_iqr(df, factor=1.5)
     df = fill_missing(df, strategy=fill_strategy)
-    df, scaler = scale_features(df, method=scale_method)
+
+    feature_data = df[feature_cols]
+    target_data = df[target_cols]
+
+    feature_data, feature_scaler = scale_features(feature_data, method=scale_method, scaler=apply_scaler.get('feature', None))
+    target_data, target_scaler = scale_features(target_data, method=scale_method, scaler=apply_scaler.get('target', None))
+        
+    feature_data = feature_data.values
+    target_data = target_data.values
 
     X, y = [], []
-    data = df.values
-    for i in range(len(data) - sequence_length):
-        X.append(np.array(data[i:i+sequence_length, [df.columns.get_loc(i) for i in feature_cols]]))
-        y.append(np.array(data[i+sequence_length, [df.columns.get_loc(i) for i in target_cols]]))
-    X = np.array(X)
-    y = np.array(y)
+    for i in range(len(feature_data) - sequence_length):
+        X_seq = np.array(feature_data[i:i+sequence_length], dtype=np.float32)
+        y_seq = np.array(target_data[i+sequence_length], dtype=np.float32)
+        X.append(X_seq)
+        y.append(y_seq)
 
-    return X, y, scaler
+    feature = np.array(X, dtype=np.float32)
+    target = np.array(y, dtype=np.float32)
+
+    assert not np.any(np.isnan(feature)), "Feature  contains NaN!"
+    assert not np.any(np.isinf(feature)), "Feature  contains Inf!"
+    assert not np.any(np.isnan(target)), "Target  contains NaN!"
+    assert not np.any(np.isinf(target)), "Target  contains Inf!"
+
+    return feature, target, feature_scaler, target_scaler
 
 
 def process_to_dataloader(
-        X:pd.DataFrame, # 特徵數據
-        y:pd.DataFrame,
-        batch_size:int=32
+        X:np.ndarray, # 特徵數據
+        y:np.ndarray,
+        batch_size:int=32,
+        shuffle:bool=True
     )->DataLoader:
     """
     將特徵和標籤轉換為 PyTorch DataLoader 格式。
@@ -134,7 +199,7 @@ def process_to_dataloader(
         torch.tensor(X, dtype=torch.float32),
         torch.tensor(y, dtype=torch.float32)
     )
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
 
 
@@ -144,7 +209,7 @@ if __name__ == "__main__":
     feature_cols = ['Chiller_1_VLN_R', 'Chiller_1_VLN_S']
     target_cols = ['Chiller_1_VLN_avg', 'Chiller_1_I_S']
     df = pd.read_csv(filepath)
-    X, y, scaler = preprocess_for_lstm(df,
+    X, y, *scalers = preprocess_for_lstm(df,
                                         datetime_col='DateTime', 
                                        feature_cols=feature_cols,
                                        target_cols=target_cols,
@@ -153,4 +218,4 @@ if __name__ == "__main__":
                                        sequence_length=24)
     print("X shape:", X.shape, "X sample:", X[0])
     print("y shape:", y.shape, "y sample:", y[0])
-    print("Scaler:", scaler)  # To save or use later for inverse transformation
+    print("Scaler:", scalers)  # To save or use later for inverse transformation

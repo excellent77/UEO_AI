@@ -136,3 +136,5 @@ dmypy.json
 # pytorch data
 data/
 model_record/
+wandb/
+test.py

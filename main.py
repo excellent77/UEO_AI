@@ -23,6 +23,8 @@ MACHINE_FEATURES = {
 
 MACHINE_TYPES = list(MACHINE_FEATURES.keys())
 MODEL_DIR = os.path.join(os.getcwd(), 'model_record')
+SEQUENCE_LENGTH = 60
+BATCH_SIZE = 128
 
 
 
@@ -128,7 +130,11 @@ if __name__ == "__main__":
                     """
                     # 進行資料清洗與轉換
                     X, y, *scalers = Preprocessing.preprocess_for_lstm(
-                        df, datetime_col, feature_cols, target_cols, fill_strategy, scale_method
+                        df,
+                        datetime_col, feature_cols, target_cols,
+                        fill_strategy,
+                        scale_method,
+                        sequence_length=SEQUENCE_LENGTH
                     )
                     shape_str = f"特徵 shape: {X.shape}; 標籤 shape: {y.shape}"
                     return [shape_str, X, y, scalers]
@@ -197,7 +203,7 @@ if __name__ == "__main__":
                     """
                     save_dir = os.path.join(MODEL_DIR, model_name)
                     loss_function = losses.build_loss(loss)
-                    dataloader = Preprocessing.process_to_dataloader(feature, labels)
+                    dataloader = Preprocessing.process_to_dataloader(feature, labels, batch_size=BATCH_SIZE)
 
                     model = models.build_model(
                         model_name=model_name,

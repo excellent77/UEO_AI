@@ -4,7 +4,7 @@ import torch.nn as nn
 
 
 
-LOSS_LIST = ("CrossEntropy", "BCEW", "MSE", "L1Loss")
+LOSS_LIST = ("BCEW", "MSE", "L1Loss")
 
 
 
@@ -83,7 +83,6 @@ class Compose_Loss(nn.Module):
 
 def build_loss(
         loss_type: Literal[
-            "CrossEntropy",
             "BCEW",
             "MSE",
             "L1Loss"
@@ -97,9 +96,7 @@ def build_loss(
          the loss function object
     '''
 
-    if loss_type == "CrossEntropy":
-        return CrossEntropyLoss(*args, **kwargs)
-    elif loss_type == "BCEW":
+    if loss_type == "BCEW":
         return BinaryCrossEntropyWithLogits(*args, **kwargs)
     elif loss_type == "MSE":
         return MSELoss(*args, **kwargs)

@@ -6,10 +6,12 @@ import torch
 from tqdm import tqdm
 import time
 import wandb
+
 import torch.nn as nn
 import sklearn.metrics as metrics
 import torch.nn.functional as F
 
+from models import *
 
 
 # 狀態向量示例：選取室內與外部環境多項溫度、濕度、電表功率等
@@ -47,106 +49,9 @@ WARMUP_EPOCHS = 30  # 預熱階段的epoch數
 BATCH_SIZE = 128
 SEQUENCE_LENGTH = 60
 PRE_TRAINED_MODEL = r""  # 預訓練模型路徑，如果有的話
-MODEL_TYPE = "Trans64_out64"
+MODEL_TYPE = "Trans"
 KEY_WORDS = ['Kvar_tot', 'KW_tot', 'PF_avg']
 
-
-
-class Predict_Model(nn.Module):
-    def __init__(self, input_size, output_size, lstm_hidden_size=64, dense_units=64, dropout=0.2):
-        super(Predict_Model, self).__init__()
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=lstm_hidden_size,
-            num_layers=2,
-            batch_first=True,
-            dropout=dropout
-        )
-
-        self.dense1 = nn.Linear(lstm_hidden_size, dense_units)
-        self.bn1 = nn.BatchNorm1d(dense_units)          # 第一層BatchNorm
-
-        self.activation = nn.LeakyReLU()
-        self.drop = nn.Dropout(dropout)
-        self.output_layer = nn.Linear(dense_units, output_size)
-
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        out = out[:, -1, :]            # 取最後時間步輸出
-
-        out = self.dense1(out)
-        out = self.bn1(out)                # BatchNorm
-        out = self.activation(out)
-        out = self.drop(out)
-
-        out = self.output_layer(out)      # 輸出層無激活函數
-
-        return out
-
-class Transformer_Model(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=64, num_layers=2, nhead=4, dense_units=64, dropout=0.1):
-        super(Transformer_Model, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        
-        # 將輸入投影到 hidden_size 方便給 Transformer
-        self.input_fc = nn.Linear(input_size, hidden_size)
-        
-        # 位置編碼 (可簡單用 learnable 或 sinusoidal)
-        self.pos_encoder = PositionalEncoding(hidden_size, dropout)
-        
-        # Transformer Encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_size,
-            nhead=nhead,
-            dropout=dropout,
-            batch_first=False  # 要配合下面轉置
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_layers
-        )
-        
-        # 輸出層
-        self.fc_out = nn.Sequential(
-            nn.Linear(hidden_size, dense_units),
-            nn.BatchNorm1d(dense_units),
-            nn.LeakyReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dense_units, output_size)
-        )
-
-    def forward(self, x):
-        # x: [batch, seq_len, input_size]
-        x = self.input_fc(x)                    # [batch, seq_len, hidden_size]
-        x = x.transpose(0,1)                    # [seq_len, batch, hidden_size] for transformer
-        x = self.pos_encoder(x)                 # 增加位置資訊
-        
-        out = self.transformer_encoder(x)       # [seq_len, batch, hidden_size]
-        
-        # 取最後一個時間步
-        out = out[-1, :, :]                     # [batch, hidden_size]
-        out = self.fc_out(out)                  # [batch, output_size]
-        return out
-
-class PositionalEncoding(nn.Module):
-    # 經典 sine-cosine 位置編碼
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model)
-        )
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(1)  # [max_len, 1, d_model]
-        self.register_buffer('pe', pe)
-    def forward(self, x):
-        # x: [seq_len, batch, dim]
-        x = x + self.pe[:x.size(0)]
-        return self.dropout(x)
 
 
 def train_model(

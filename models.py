@@ -1,76 +1,86 @@
+import os
 import time
+from typing import Literal
+
 import torch
 import torch.nn as nn
-from typing import Literal
 
 
 
 #獲取 models.py 中定義的所有類別名稱
 MODEL_LIST = ("LSTM_Model", "GRU_Model", "Transformer_Model")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 
 class LSTM_Model(nn.Module):
 
-    def __init__(self, input_size, hidden_size, num_layers, output_size):
+    def __init__(self, input_size, output_size, hidden_size=64, dense_units=64, num_layers=2, dropout=0.2):
         super(LSTM_Model, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        
-        # LSTM 層
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        
-        # 全連接層
-        self.fc = nn.Linear(hidden_size, output_size)
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout
+        )
+
+        self.dense1 = nn.Linear(hidden_size, dense_units)
+        self.bn1 = nn.BatchNorm1d(dense_units)          # 第一層BatchNorm
+
+        self.activation = nn.LeakyReLU()
+        self.drop = nn.Dropout(dropout)
+        self.output_layer = nn.Linear(dense_units, output_size)
 
     def forward(self, x):
-        # 初始化隱藏狀態和細胞狀態
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        
-        # LSTM 前向傳播
-        out, _ = self.lstm(x, (h0, c0))
-        
-        # 取最後一個時間步的輸出
-        out = out[:, -1, :]
-        
-        # 全連接層輸出
-        out = self.fc(out)
-        
+        out, _ = self.lstm(x)
+        out = out[:, -1, :]            # 取最後時間步輸出
+
+        out = self.dense1(out)
+        out = self.bn1(out)                # BatchNorm
+        out = self.activation(out)
+        out = self.drop(out)
+
+        out = self.output_layer(out)      # 輸出層無激活函數
+
         return out
 
 
 class GRU_Model(nn.Module):
 
-    def __init__(self, input_size, hidden_size, num_layers, output_size):
+    def __init__(self, input_size, output_size, hidden_size=64, dense_units=64, num_layers=2, dropout=0.2):
         super(GRU_Model, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        
-        # GRU 層
-        self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
-        
-        # 全連接層
-        self.fc = nn.Linear(hidden_size, output_size)
+        self.lstm = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout
+        )
+
+        self.dense1 = nn.Linear(hidden_size, dense_units)
+        self.bn1 = nn.BatchNorm1d(dense_units)          # 第一層BatchNorm
+
+        self.activation = nn.LeakyReLU()
+        self.drop = nn.Dropout(dropout)
+        self.output_layer = nn.Linear(dense_units, output_size)
 
     def forward(self, x):
-        # 初始化隱藏狀態 (GRU 沒有 cell state)
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        
-        # GRU 前向傳播
-        out, _ = self.gru(x, h0)
-        
-        # 取最後一個時間步的輸出
-        out = out[:, -1, :]
-        
-        # 全連接層輸出
-        out = self.fc(out)
-        
+        out, _ = self.lstm(x)
+        out = out[:, -1, :]            # 取最後時間步輸出
+
+        out = self.dense1(out)
+        out = self.bn1(out)                # BatchNorm
+        out = self.activation(out)
+        out = self.drop(out)
+
+        out = self.output_layer(out)      # 輸出層無激活函數
+
         return out
     
 
 class Transformer_Model(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, output_size, nhead=4, dropout=0.1):
+    def __init__(self, input_size, output_size, hidden_size=64, num_layers=2, nhead=4, dense_units=64, dropout=0.1):
         super(Transformer_Model, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -86,7 +96,7 @@ class Transformer_Model(nn.Module):
             d_model=hidden_size,
             nhead=nhead,
             dropout=dropout,
-            batch_first=False  # 要配合下面轉置
+            batch_first=True # 要配合下面轉置
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
@@ -94,18 +104,23 @@ class Transformer_Model(nn.Module):
         )
         
         # 輸出層
-        self.fc_out = nn.Linear(hidden_size, output_size)
+        self.fc_out = nn.Sequential(
+            nn.Linear(hidden_size, dense_units),
+            nn.BatchNorm1d(dense_units),
+            nn.LeakyReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dense_units, output_size)
+        )
 
     def forward(self, x):
         # x: [batch, seq_len, input_size]
         x = self.input_fc(x)                    # [batch, seq_len, hidden_size]
-        x = x.transpose(0,1)                    # [seq_len, batch, hidden_size] for transformer
         x = self.pos_encoder(x)                 # 增加位置資訊
         
         out = self.transformer_encoder(x)       # [seq_len, batch, hidden_size]
         
         # 取最後一個時間步
-        out = out[-1, :, :]                     # [batch, hidden_size]
+        out = out[:, -1, :]                     # [batch, hidden_size]
         out = self.fc_out(out)                  # [batch, output_size]
         return out
 
@@ -127,6 +142,7 @@ class PositionalEncoding(nn.Module):
         # x: [seq_len, batch, dim]
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
+
     
 
 
@@ -154,18 +170,30 @@ def build_model(
         torch.nn.Module: 相應的模型實例。
     """
     if model_name == 'LSTM_Model':
-        return LSTM_Model(input_size, hidden_size, num_layers, output_size)
+        return LSTM_Model(
+            input_size=input_size,
+            output_size=output_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers
+        )
     elif model_name == 'GRU_Model':
-        return GRU_Model(input_size, hidden_size, num_layers, output_size)
+        return GRU_Model(
+            input_size=input_size,
+            output_size=output_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers
+        )
     elif model_name == 'Transformer_Model':
-        return Transformer_Model(input_size, hidden_size, num_layers, output_size, *args, **kwargs)
+        return Transformer_Model(
+            input_size=input_size,
+            output_size=output_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers
+            *args, **kwargs
+        )
     else:
         raise ValueError(f"Unsupported model name: {model_name}")
 
-
-import torch
-import time
-import os
 
 def train_model(
         model: torch.nn.Module,
@@ -173,61 +201,44 @@ def train_model(
         criterion: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler._LRScheduler,
-        num_epochs: int,
-        save_dir: str,
-        early_stopping: int = 10
+        num_epochs:int,
+        save_dir: str
     ):
-    '''
-    訓練模型，並在每個 epoch 結束時返回損失和學習率歷史記錄。
-    '''
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    criterion = criterion.to(device)
-    
-    best_loss = float('inf')
-    record = 0
+
+    timestamp = time.strftime('%Y%m%d-%H%M%S')
+    model.to(DEVICE)
     loss_history = []
     lr_history = []
 
     for epoch in range(num_epochs):
-        epoch_loss = 0
-        for inputs, targets in train_loader:
+
+        model.train()
+        total_loss = 0.0
+
+        for data, target in train_loader:
+            data, target = data.to(DEVICE), target.to(DEVICE)
             optimizer.zero_grad()
-            output = model(inputs.to(device))
-            loss = criterion(output, targets.to(device))
+            output = model(data)
+            loss = criterion(output, target)
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
-        
-        avg_loss = epoch_loss / len(train_loader)
-        
-        if scheduler is not None:
-            if scheduler.__class__.__name__ == 'ReduceLROnPlateau':
-                scheduler.step(avg_loss)
-            else:
-                scheduler.step()
-        
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(train_loader)
         lr_now = optimizer.param_groups[0]['lr']
+        
+        scheduler.step()
+        
         loss_history.append(avg_loss)
         lr_history.append(lr_now)
 
-        # 儲存模型檔案，確保資料夾存在
-        if avg_loss < best_loss:
-            record = 0
-            best_loss = avg_loss
-            os.makedirs(save_dir, exist_ok=True)
-            torch.save(model.state_dict(), f"{save_dir}/MODEL_{timestamp}.pth")
-        else:
-            record += 1
-            if record >= early_stopping:
-                yield loss_history, lr_history, "Early stopping triggered."
-                break
+        os.makedirs(save_dir, exist_ok=True)
+        torch.save(model.state_dict(), f"{save_dir}/MODEL_{timestamp}.pth")
         
         yield loss_history, lr_history, (
             f"Epoch {epoch+1}/{num_epochs} - Loss: {avg_loss:.4f} - LR: {lr_now:.6f}"
         )
-
+        
 def predict(
         model:torch.nn.Module,
         data_loader:torch.utils.data.DataLoader

@@ -4,7 +4,7 @@ import torch.nn as nn
 
 
 
-LOSS_LIST = ("BCEW", "MSE", "L1Loss")
+LOSS_LIST = ("MSE", "BCEW", "L1Loss")
 
 
 

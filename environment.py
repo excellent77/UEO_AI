@@ -1,17 +1,17 @@
-import os
-import numpy as np
-import pandas as pd
-import Preprocessing
-import torch
-from tqdm import tqdm
 import time
 import wandb
-
-import torch.nn as nn
+import numpy as np
+from tqdm import tqdm
 import sklearn.metrics as metrics
-import torch.nn.functional as F
+#import os
+#import pandas as pd
 
-from models import *
+import torch
+#import torch.nn as nn
+#import torch.nn.functional as F
+
+#import Preprocessing
+#from models import *
 
 
 # 狀態向量示例：選取室內與外部環境多項溫度、濕度、電表功率等
@@ -163,7 +163,7 @@ def evaluate_r2(model, data_loader, scaler):
 
 
 if __name__ == "__main__":
-    os.makedirs('model_record/environment', exist_ok=True)
+    '''os.makedirs('model_record/environment', exist_ok=True)
 
 
     ## 資料處理 ##
@@ -306,5 +306,5 @@ if __name__ == "__main__":
     print("test r2", evaluate_r2(model, test_loader, y_scaler))
 
     print("val loss: ", evaluate_model(model, val_loader, criterion))
-    print("val r2", evaluate_r2(model, val_loader, y_scaler))
+    print("val r2", evaluate_r2(model, val_loader, y_scaler))'''
     

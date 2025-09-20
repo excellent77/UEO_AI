@@ -1,6 +1,8 @@
 import os
 import time
+import numpy as np
 from typing import Literal
+import sklearn.metrics as metrics
 
 import torch
 import torch.nn as nn
@@ -195,24 +197,43 @@ def build_model(
         raise ValueError(f"Unsupported model name: {model_name}")
 
 
+def evaluate_model(model, data_loader, criterion):
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for data, target in data_loader:
+            data, target = data.to(DEVICE), target.to(DEVICE)
+            output = model(data)
+            loss = criterion(output, target)
+            total_loss += loss.item()
+    
+    return total_loss/len(data_loader)
+
+def evaluate_r2(model, data_loader, scaler):
+    predictions, real_values = predict(model, data_loader, scaler)
+    return metrics.r2_score(real_values, predictions)
+
 def train_model(
         model: torch.nn.Module,
         train_loader: torch.utils.data.DataLoader,
+        val_loader: torch.utils.data.DataLoader,
         criterion: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler._LRScheduler,
+        scaler,
         num_epochs:int,
-        save_dir: str
+        save_dir: str,
+        early_stopping:int
     ):
 
     timestamp = time.strftime('%Y%m%d-%H%M%S')
     model.to(DEVICE)
-    loss_history = []
-    lr_history = []
 
     for epoch in range(num_epochs):
 
         model.train()
+        best_loss = float('inf')
+        record = 0
         total_loss = 0.0
 
         for data, target in train_loader:
@@ -224,24 +245,34 @@ def train_model(
             optimizer.step()
             total_loss += loss.item()
 
+        # 訓練一輪後做：驗證集評價
+        val_loss = evaluate_model(model, val_loader, criterion)
+        val_r2 = evaluate_r2(model, val_loader, scaler)
         avg_loss = total_loss / len(train_loader)
         lr_now = optimizer.param_groups[0]['lr']
         
-        scheduler.step()
+        # 檢查是否早停
+        if val_loss < best_loss:
+            best_loss = val_loss
+            os.makedirs(save_dir, exist_ok=True)
+            torch.save(model.state_dict(), f"{save_dir}/MODEL_{timestamp}.pth")
+            record = 0
+        else:
+            record += 1
+            if record >= early_stopping:
+                yield avg_loss, val_loss, val_r2, lr_now, f'Early stopping at epoch {epoch+1}'
+                break
         
-        loss_history.append(avg_loss)
-        lr_history.append(lr_now)
-
-        os.makedirs(save_dir, exist_ok=True)
-        torch.save(model.state_dict(), f"{save_dir}/MODEL_{timestamp}.pth")
+        scheduler.step(val_loss)
         
-        yield loss_history, lr_history, (
-            f"Epoch {epoch+1}/{num_epochs} - Loss: {avg_loss:.4f} - LR: {lr_now:.6f}"
+        yield avg_loss, val_loss, val_r2, lr_now, (
+            f"Epoch {epoch+1}/{num_epochs} - Loss: {avg_loss:.4f} - val_Loss: {val_loss:.4f} - val_r2: {val_r2:.4f} - LR: {lr_now:.6f}"
         )
-        
+
 def predict(
         model:torch.nn.Module,
-        data_loader:torch.utils.data.DataLoader
+        data_loader:torch.utils.data.DataLoader,
+        scaler
     )-> torch.Tensor:
     '''
     使用訓練好的模型對數據進行預測。
@@ -251,12 +282,14 @@ def predict(
     Returns:
         torch.Tensor: 預測結果。
     '''
-
     model.eval()
     predictions = []
+    real_values = []
     with torch.no_grad():
-        for inputs in data_loader:
-            outputs = model(inputs)
-            predictions.append(outputs)
-            
-    return torch.cat(predictions, dim=0)
+        for data, target in data_loader:
+            data = data.to(DEVICE)
+            output = model(data)
+            predictions.append(scaler.inverse_transform(output.cpu().numpy()))
+            real_values.append(scaler.inverse_transform(target.cpu().numpy()))
+    
+    return np.concatenate(predictions, axis=0), np.concatenate(real_values, axis=0) 

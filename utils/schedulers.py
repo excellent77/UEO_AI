@@ -14,8 +14,7 @@ SCH_LIST = (
     "CyclicLR",
     "OneCycleLR",
     "PolynomialLR",
-    "CosineAnnealingWarmRestarts",
-    "warmup_scheduler"
+    "CosineAnnealingWarmRestarts"
 )
 
 
@@ -35,21 +34,6 @@ class SchedulerWrapper:
         return getattr(self._scheduler, name)
 
 ##################################################################################################
-def warmup_lr_scheduler(
-        optimizer: optim.Optimizer,  # Optimizer to be wrapped by the scheduler
-        warmup_epochs: int = 10,  # Number of warmup epochs
-    ) -> lr_scheduler.LRScheduler:
-    """
-    Linearly ramps up the learning rate within warmup_epochs
-    number of epochs.
-    """
-    # 除以 warmup_epochs 並強制為 float 避免整數除法
-    lambda1 = lambda epoch: (epoch + 1) / max(1, warmup_epochs)
-
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda1)
-    # 移除 verbose 參數，避免不支援錯誤
-    return scheduler
-
 class WarmupReduceLROnPlateau:
     """
     一個結合了線性 Warmup 和 ReduceLROnPlateau 的排程器。
@@ -120,14 +104,7 @@ def build_scheduler(
         LRScheduler
     """
     scheduler = None
-    if scheduler_type == "warmup_scheduler":
-        
-        scheduler = warmup_lr_scheduler(
-            optimizer=optimizer,
-            warmup_epochs=config.get("warmup_epochs", 10)
-        )
-    
-    elif scheduler_type == "WarmupReduceLROnPlateau":
+    if scheduler_type == "WarmupReduceLROnPlateau":
         reduce_lr_config = {
             'mode': config.get('mode', 'min'),
             'factor': config.get('factor', 0.5),
@@ -224,9 +201,4 @@ def build_scheduler(
     else:
         raise ValueError("Invalid Input -- Check scheduler_type")
     
-    # 如果 scheduler 不是自訂的 WarmupReduceLROnPlateau，就用 Wrapper 包裝它
-    # WarmupReduceLROnPlateau 已經有處理 metrics 的邏輯，所以不需要包裝
-    if scheduler and not isinstance(scheduler, WarmupReduceLROnPlateau):
-        return SchedulerWrapper(scheduler)
-    
-    return scheduler
+    return SchedulerWrapper(scheduler)

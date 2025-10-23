@@ -23,6 +23,9 @@ def clean_data(
     傳回:
         - 清洗後的 DataFrame
     '''
+    if datetime_col is None:
+        return df # 如果沒有時間欄位，直接返回原 df
+
     df[datetime_col] = pd.to_datetime(df[datetime_col], format='mixed')
     df = df.sort_values(by=datetime_col)
     df = df.reset_index(drop=True)
@@ -154,7 +157,7 @@ def preprocess_for_lstm(
             raise ValueError("Input must be a pandas DataFrame or a file-like object.")
 
     df = clean_data(df, datetime_col)
-    df = remove_outliers_iqr(df, factor=1.5)
+    df = remove_outliers_iqr(df, factor=150)
     df = fill_missing(df, strategy=fill_strategy)
 
     feature_data = df[feature_cols]

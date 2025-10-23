@@ -3,6 +3,7 @@ import gradio as gr
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
+import numpy as np
 matplotlib.use('Agg')
 
 import torch
@@ -28,6 +29,11 @@ MACHINE_FEATURES = {
 MACHINE_TYPES = list(MACHINE_FEATURES.keys())
 MODEL_DIR = os.path.join(os.getcwd(), 'model_record')
 SEQUENCE_LENGTH = 60
+EARLY_STOPPING_PREDICT = 10
+EARLY_STOPPING_SOLVER = 10
+SOLVER_MODEL_TYPE = "SAC_LSTM"
+SOLVER_MODEL_DIR = os.path.join(MODEL_DIR, 'DDPG') # 沿用舊的 DDPG 資料夾
+REPLAY_BUFFER_CAPACITY = 10000
 BATCH_SIZE = 128
 
 
@@ -66,6 +72,8 @@ if __name__ == "__main__":
     for mode in models.MODEL_LIST:
         # 確保模型目錄存在
         os.makedirs(os.path.join(MODEL_DIR, mode), exist_ok=True)
+    # 確保求解器模型目錄存在
+    os.makedirs(SOLVER_MODEL_DIR, exist_ok=True)
 
     with gr.Blocks() as demo:
         gr.Markdown("## 耗能設備的通用性能源操作優化框架 ")
@@ -81,8 +89,8 @@ if __name__ == "__main__":
             with gr.Tab("選擇欄位"):
                 DP_machine = gr.Dropdown(choices=MACHINE_TYPES, label="請選擇設備類別")
                 RD_datetime = gr.Radio(choices=[], label="請選擇「時間戳記」的欄位")
-                CBG_feature = gr.CheckboxGroup(choices=[], label="請選擇要用於「判斷」的欄位")
-                CBG_target = gr.CheckboxGroup(choices=[], label="請選擇要用於「預測」的欄位")
+                CBG_act = gr.CheckboxGroup(choices=[], label="請選擇要用於「動作(Action)」的欄位")
+                CBG_reward = gr.CheckboxGroup(choices=[], label="請選擇要用於「獎勵Reward」的欄位")
 
                 BTN_select = gr.Button("確認選擇", interactive=False)
                 output_select = gr.Textbox(label="選擇結果", interactive=False)
@@ -99,8 +107,8 @@ if __name__ == "__main__":
                     """
                     result = f"已選設備：{machine}\n"
                     result += f"時間欄位：{datetime_col}\n"
-                    result += f"用於判斷欄位：{train_cols}\n"
-                    result += f"用於預測欄位：{label_cols}\n"
+                    result += f"用於執行動作的欄位：{train_cols}\n"
+                    result += f"用於預測獎勵欄位：{label_cols}\n"
                     return result
                 
                 BTN_select.click(
@@ -108,8 +116,8 @@ if __name__ == "__main__":
                     inputs=[
                         DP_machine,
                         RD_datetime,
-                        CBG_feature,
-                        CBG_target
+                        CBG_act,
+                        CBG_reward
                     ],
                     outputs=output_select
                 )
@@ -117,6 +125,7 @@ if __name__ == "__main__":
             with gr.Tab("資料清洗"):
                 DP_fill = gr.Dropdown(choices=Preprocessing.FILL_STRATEGIES, label="請選擇缺失值填補策略")
                 DP_scale = gr.Dropdown(choices=Preprocessing.SCALE_METHODS, label="請選擇正規化方式")
+                NUM_sequence_length = gr.Slider(label="序列長度 (以多少個時間點為一個序列間隔)", minimum=1, maximum=100, step=1, value=SEQUENCE_LENGTH, interactive=True)
 
                 BTN_clean = gr.Button("確認選擇", interactive=False)
                 output_clean = gr.Textbox(label="資料 shape", interactive=False)
@@ -129,10 +138,11 @@ if __name__ == "__main__":
                     train_df:pd.DataFrame, # 原始資料
                     val_df:pd.DataFrame, # 驗證資料
                     datetime_col:str, # 時間欄位名稱
-                    feature_cols:list, # 特徵(輸入)欄位清單
-                    target_cols:list, # 標籤(預測目標)欄位清單
+                    act_cols:list, # 特徵(輸入)欄位清單
+                    reward_cols:list, # 標籤(預測目標)欄位清單
                     fill_strategy:str, # 缺失值填補策略
-                    scale_method:str # 特徵正規化方式
+                    scale_method:str, # 特徵正規化方式
+                    sequence_length:int # 序列長度
                 )->list:
                     """
                     調用自訂 Preprocessing 模組的預處理流程，產生 LSTM 可用的特徵與標籤及標準化器。
@@ -142,16 +152,16 @@ if __name__ == "__main__":
                     # 進行資料清洗與轉換
                     train_feature, train_target, x_scaler, y_scaler = Preprocessing.preprocess_for_lstm(
                         train_df,
-                        datetime_col=datetime_col, feature_cols=feature_cols, target_cols=target_cols,
-                        fill_strategy=fill_strategy, scale_method=scale_method,
-                        sequence_length=SEQUENCE_LENGTH
+                        datetime_col=datetime_col, feature_cols=act_cols+reward_cols, target_cols=reward_cols,
+                        fill_strategy=fill_strategy, scale_method=scale_method, 
+                        sequence_length=sequence_length
                     )
 
                     val_feature, val_target, _, _ = Preprocessing.preprocess_for_lstm(
                         val_df,
-                        datetime_col=datetime_col, feature_cols=feature_cols, target_cols=target_cols,
-                        fill_strategy=fill_strategy, scale_method=scale_method,
-                        sequence_length=SEQUENCE_LENGTH,
+                        datetime_col=datetime_col, feature_cols=act_cols+reward_cols, target_cols=reward_cols,
+                        fill_strategy=fill_strategy, scale_method=scale_method, 
+                        sequence_length=sequence_length,
                         apply_scaler={
                             "feature": x_scaler,
                             "target": y_scaler
@@ -175,10 +185,11 @@ if __name__ == "__main__":
                         train_data,
                         val_data,
                         RD_datetime,
-                        CBG_feature,
-                        CBG_target,
+                        CBG_act,
+                        CBG_reward,
                         DP_fill,
-                        DP_scale
+                        DP_scale,
+                        NUM_sequence_length
                     ],
                     outputs=[
                         output_clean,
@@ -289,7 +300,7 @@ if __name__ == "__main__":
                         scaler=scalers_dict['target'],
                         save_dir=save_dir,
                         num_epochs=epochs,
-                        early_stopping=10
+                        early_stopping=EARLY_STOPPING_PREDICT
                     ):
                         loss_hist.append(avg_loss)
                         val_loss_hist.append(val_loss)
@@ -342,9 +353,139 @@ if __name__ == "__main__":
                     outputs=[loss_plot, r2_plot, lr_plot, output_hyp]
                 )
                         
-            with gr.Tab("規劃求解器"):
-                gr.Markdown("正在開發中...")
+            with gr.Tab("求解器"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 1. 選擇環境與欄位")
+                        DP_env_model_name = gr.Dropdown(choices=models.MODEL_LIST, label="選擇環境模型類別")
+                        DP_env_model_file = gr.Dropdown(choices=[], label="選擇已訓練的環境模型檔案")
+                        BTN_solver_cols = gr.Button("確認欄位")
 
+                        gr.Markdown("### 2. 設定 SAC 超參數")
+                        NUM_solver_epochs = gr.Number(label="訓練週期數 (Epochs)", value=100, precision=0)
+                        NUM_solver_steps = gr.Number(label="每週期最大步數 (Steps)", value=1000, precision=0)
+                        NUM_warmup_steps = gr.Number(label="預熱步數 (Warmup Steps)", value=10000, precision=0)
+                        NUM_solver_lr_actor = gr.Slider(label="Actor 學習率", minimum=1e-5, maximum=1e-3, step=1e-5, value=3e-4)
+                        NUM_solver_lr_critic = gr.Slider(label="Critic 學習率", minimum=1e-5, maximum=1e-3, step=1e-5, value=3e-4)
+                        NUM_solver_gamma = gr.Slider(label="折扣因子 (Gamma)", minimum=0.9, maximum=0.999, step=0.001, value=0.99)
+                        NUM_solver_alpha = gr.Slider(label="溫度係數 (Alpha)", minimum=0.0, maximum=1.0, step=0.05, value=0.2)
+                        BTN_solver_train = gr.Button("開始訓練求解器", interactive=False)
+
+                    with gr.Column(scale=2):
+                        gr.Markdown("### 3. 訓練進度")
+                        output_solver_hyp = gr.Textbox(lines=10, label="訓練日誌", interactive=False)
+                        solver_loss_plot = gr.Plot(label="Solver Loss 變化")
+
+                # 求解器相關的狀態儲存
+                solver_state_cols = gr.State()
+                solver_action_cols = gr.State()
+                solver_reward_cols = gr.State()
+                initial_states_np = gr.State()
+
+                def set_solver_columns(action_cols, reward_cols, train_df, val_df, fill_strategy, scale_method):
+                    feature_cols = action_cols + reward_cols
+                    """設定求解器所需欄位，並準備初始狀態數據"""
+                    if train_df is None or val_df is None:
+                        gr.Warning("請先上傳訓練與驗證資料集！")
+                        return None, None, None, None
+
+                    # 從 Gradio 的 File 物件讀取 DataFrame
+                    try:
+                        train_df = pd.read_csv(train_df.name)
+                        val_df = pd.read_csv(val_df.name)
+                    except Exception as e:
+                        raise gr.Error(f"讀取CSV檔案時發生錯誤: {e}")
+
+                    # 狀態 = 判斷欄位 - 動作欄位
+                    state_cols = sorted(list(set(feature_cols) - set(action_cols)))
+                    
+                    # 合併 train 和 val 以獲得更完整的初始狀態集
+                    full_df = pd.concat([train_df, val_df], ignore_index=True)
+                    cleaned_df = Preprocessing.clean_data(full_df, datetime_col=None) # 時間欄位已無用
+                    cleaned_df = Preprocessing.remove_outliers_iqr(cleaned_df)
+                    cleaned_df = Preprocessing.fill_missing(cleaned_df, strategy=fill_strategy)
+                    
+                    initial_states_df, _ = Preprocessing.scale_features(cleaned_df[state_cols], method=scale_method)
+                    
+                    return state_cols, action_cols, reward_cols, initial_states_df.values.astype(np.float32)
+
+                BTN_solver_cols.click(
+                    fn=set_solver_columns,
+                    inputs=[CBG_act, CBG_reward, train_data, val_data, DP_fill, DP_scale],
+                    outputs=[solver_state_cols, solver_action_cols, solver_reward_cols, initial_states_np]
+                )
+
+                def start_solver_train(
+                    env_model_name, env_model_file,
+                    state_cols, action_cols, reward_cols, initial_states,
+                    epochs, steps, warmup_steps, lr_actor, lr_critic, gamma, alpha
+                ):
+                    if not all([env_model_file, state_cols, action_cols, reward_cols, initial_states is not None]):
+                        yield None, "請先在前面分頁完成資料處理，並在此頁籤確認所有欄位與模型選擇！"
+                        return
+
+                    state_dim = len(state_cols)
+                    action_dim = len(action_cols)
+                    reward_dim = len(reward_cols)
+
+                    # 1. 載入環境模型
+                    env_model_path = os.path.join(MODEL_DIR, env_model_name, env_model_file)
+                    environment_model = models.build_model(
+                        model_name=env_model_name,
+                        input_size=state_dim + action_dim,
+                        output_size=reward_dim,
+                        hidden_size=64, num_layers=2
+                    )
+                    environment_model.load_state_dict(torch.load(env_model_path, map_location=models.DEVICE))
+
+                    # 2. 建立 SAC Agent 和 Replay Buffer
+                    sac_agent = models.SoftActorCritic(state_dim, action_dim)
+                    replay_buffer = models.ReplayBuffer(capacity=REPLAY_BUFFER_CAPACITY, sequence_length=SEQUENCE_LENGTH)
+
+                    status_record = f"---Starting SAC Training---\n"
+                    actor_loss_hist, critic_loss_hist = [], []
+
+                    # 3. 開始訓練
+                    train_generator = models.train_sac_agent(
+                        sac=sac_agent,
+                        environment_model=environment_model,
+                        initial_states=initial_states,
+                        reward_keys=reward_cols,
+                        action_dim=action_dim,
+                        train_buffer=replay_buffer,
+                        save_dir=SOLVER_MODEL_DIR,
+                        model_type=SOLVER_MODEL_TYPE,
+                        epochs=epochs,
+                        steps=steps,
+                        warmup_steps=warmup_steps,
+                        lr_actor=lr_actor,
+                        lr_critic=lr_critic,
+                        gamma=gamma,
+                        alpha=alpha,
+                        early_stop_patience=EARLY_STOPPING_SOLVER
+                    )
+
+                    for actor_loss, critic_loss, status in train_generator:
+                        status_record += status + '\n'
+                        actor_loss_hist.append(actor_loss)
+                        critic_loss_hist.append(critic_loss)
+                        
+                        epochs_range = list(range(1, len(actor_loss_hist) + 1))
+                        loss_fig = create_matplotlib_figure(
+                            datasets=[
+                                {'x': epochs_range, 'y': actor_loss_hist, 'label': 'Actor Loss'},
+                                {'x': epochs_range, 'y': critic_loss_hist, 'label': 'Critic Loss'}
+                            ],
+                            title="SAC Solver Loss"
+                        )
+                        yield loss_fig, status_record
+                        plt.close(loss_fig)
+
+                BTN_solver_train.click(
+                    fn=start_solver_train,
+                    inputs=[DP_env_model_name, DP_env_model_file, solver_state_cols, solver_action_cols, solver_reward_cols, initial_states_np, NUM_solver_epochs, NUM_solver_steps, NUM_warmup_steps, NUM_solver_lr_actor, NUM_solver_lr_critic, NUM_solver_gamma, NUM_solver_alpha],
+                    outputs=[solver_loss_plot, output_solver_hyp]
+                )
 
 
         def update_columns(file)->list:
@@ -358,13 +499,15 @@ if __name__ == "__main__":
             """
             if file is None:
                 # 無檔案時, 回傳空選項及無預覽
-                return [
+                return (
                     gr.update(choices=[], value=[]),
                     gr.update(choices=[], value=[]),
                     gr.update(choices=[], value=[]),
-                    gr.update(interactive=False), 
+                    gr.update(choices=[], value=[]),
+                    gr.update(choices=[], value=[]),
+                    gr.update(interactive=False),
                     None
-                ]
+                )
             
             df = pd.read_csv(file.name, encoding="utf-8")
             cols = df.columns.tolist()
@@ -373,6 +516,8 @@ if __name__ == "__main__":
                 gr.update(choices=cols, value=[]),
                 gr.update(choices=cols, value=[]),
                 gr.update(choices=cols, value=[]),
+                gr.update(choices=cols, value=[]), # For solver action
+                gr.update(choices=cols, value=[]), # For solver reward
                 gr.update(interactive=True),
                 df.head()
             ]
@@ -380,7 +525,7 @@ if __name__ == "__main__":
         train_data.change(
             fn=update_columns,
             inputs=train_data,
-            outputs=[RD_datetime, CBG_feature, CBG_target, BTN_select, train_load]
+            outputs=[RD_datetime, CBG_act, CBG_reward, CBG_act, CBG_reward, BTN_select, train_load]
         )
 
         val_data.change(
@@ -389,19 +534,27 @@ if __name__ == "__main__":
             outputs=[val_load]
         )
 
-
-
         def get_model_files(model_name):
+            if not model_name:
+                return gr.update(choices=[], value=None)
             save_dir = os.path.join(MODEL_DIR, model_name)
-            files = [None] + os.listdir(save_dir)
+            files = [None] + os.listdir(save_dir) if os.path.exists(save_dir) else [None]
             return gr.update(choices=files, value=None)
                 
+        # 更新預訓練模型選單
         DP_model_name.change(
             fn=get_model_files,
             inputs=DP_model_name,
             outputs=DP_pre_model
         )
         
+
+        # 更新求解器頁籤的環境模型選單
+        DP_env_model_name.change(
+            fn=get_model_files,
+            inputs=DP_env_model_name,
+            outputs=DP_env_model_file
+        )
 
         output_select.change(
             fn=lambda: gr.update(interactive=True),
@@ -416,6 +569,12 @@ if __name__ == "__main__":
             outputs=[BTN_train]
         )
 
+        # 當求解器欄位確認後，啟用訓練按鈕
+        BTN_solver_cols.click(
+            fn=lambda: gr.update(interactive=True),
+            inputs=[],
+            outputs=[BTN_solver_train]
+        )
 
         output_hyp.change(
             fn=lambda model_name: gr.update(choices=os.listdir(os.path.join(MODEL_DIR, model_name))+[None], value=None),

@@ -1,14 +1,21 @@
 import os
 import time
 import numpy as np
+import pandas as pd
 from typing import Literal
+from collections import deque
 import sklearn.metrics as metrics
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
+import torch.distributions as D
 
 
 
+################################################################################
+### 通用設定與監督式學習模型 (LSTM, GRU, Transformer)
+################################################################################
 #獲取 models.py 中定義的所有類別名稱
 MODEL_LIST = ("LSTM_Model", "GRU_Model", "Transformer_Model")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -213,6 +220,300 @@ def evaluate_r2(model, data_loader, scaler):
     predictions, real_values = predict(model, data_loader, scaler)
     return metrics.r2_score(real_values, predictions)
 
+
+################################################################################
+### 強化學習模型 (Soft Actor-Critic)
+################################################################################
+
+class ReplayBuffer:
+    def __init__(self, capacity=1000, sequence_length=60):
+        self.buffer = deque(maxlen=capacity)
+        self.sequence_length = sequence_length
+
+    def add(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size):
+        if len(self.buffer) < self.sequence_length + 1:
+            return None
+
+        indices = np.random.choice(len(self.buffer) - self.sequence_length, batch_size, replace=False)
+        batch = []
+        for idx in indices:
+            trajectory = list(self.buffer)[idx:idx + self.sequence_length]
+            states, actions, rewards, next_states, dones = zip(*trajectory)
+            batch.append((
+                np.array(states), np.array(actions), np.array(rewards),
+                np.array(next_states), np.array(dones)
+            ))
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return (
+            torch.FloatTensor(np.array(states)).to(DEVICE),
+            torch.FloatTensor(np.array(actions)).to(DEVICE),
+            torch.FloatTensor(np.array(rewards)).unsqueeze(-1).to(DEVICE),
+            torch.FloatTensor(np.array(next_states)).to(DEVICE),
+            torch.FloatTensor(np.array(dones)).unsqueeze(-1).to(DEVICE)
+        )
+
+class LSTMCritic(nn.Module):
+    def __init__(self, state_dim, action_dim, dense_units=32, dropout=0.2):
+        super().__init__()
+        self.q_network = nn.Sequential(
+            nn.Linear(state_dim + action_dim, dense_units),
+            nn.BatchNorm1d(dense_units),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dense_units, 1)
+        )
+
+    def forward(self, state, action):
+        return self.q_network(torch.cat([state, action], dim=-1))
+
+class LSTMActor(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim=128, lstm_layers=4):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=state_dim,
+            hidden_size=hidden_dim,
+            num_layers=lstm_layers,
+            batch_first=True
+        )
+        self.fc = nn.Linear(hidden_dim, action_dim)
+        
+    def forward(self, state_emb, sequence=True):
+        out, _ = self.lstm(state_emb)
+        if not sequence:
+            out = out[:, -1, :]
+        action = torch.tanh(self.fc(out))
+        return action
+
+class SoftActorCritic(nn.Module):
+    def __init__(self, state_dim, action_dim, encode_dim=64):
+        super().__init__()
+        self.mu_layer = nn.Linear(encode_dim, action_dim)
+        self.log_sigma_layer = nn.Linear(encode_dim, action_dim)
+
+        self.encoder = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, encode_dim)
+        )
+        self.actor = LSTMActor(encode_dim, action_dim)
+        self.critic_1 = LSTMCritic(state_dim, action_dim)
+        self.critic_2 = LSTMCritic(state_dim, action_dim)
+
+    def log_prob(self, state, action):
+        encoded = self.encoder(state)
+        mu = self.mu_layer(encoded)
+        log_sigma = self.log_sigma_layer(encoded).clamp(-20, 2)
+        sigma = log_sigma.exp()
+        dist = D.Normal(mu, sigma)
+        return dist.log_prob(action).sum(-1, keepdim=True)
+
+    def forward(self, state):
+        encoded = self.encoder(state)
+        actions = self.actor(encoded)
+        return actions
+    
+    def evaluate_action(self, state, action):
+        last_state = state[:, -1, :]
+        last_action = action[:, -1, :]
+        q1 = self.critic_1(last_state, last_action)
+        q2 = self.critic_2(last_state, last_action)
+        return q1, q2
+
+def compute_reward(row_array, reward_keys, w_pf=1.0, w_p=1.0, w_kw_ratio=1.0, epsilon=1e-6, **kwargs):
+    """
+    根據獎勵相關欄位計算純量獎勵值。
+    kwargs 用於接收 apply_along_axis 可能傳入的額外參數。
+    """
+    # 為了與 pandas.apply 和 numpy.apply_along_axis 兼容
+    if isinstance(row_array, pd.Series):
+        row_dict = row_array.to_dict()
+    else:
+        row_dict = dict(zip(reward_keys, row_array))
+
+    reward = 0.0
+    # 透過 reward_keys 的順序來安全地獲取值
+    pf = row_dict.get(next((k for k in reward_keys if 'PF_avg' in k), "PF_avg"), 0)
+    kw = row_dict.get(next((k for k in reward_keys if 'KW_tot' in k), "KW_tot"), 0)
+    kvar = row_dict.get(next((k for k in reward_keys if 'Kvar_tot' in k), "Kvar_tot"), 0)
+    power_sum = kw + kvar + epsilon
+    reward += w_pf * pf
+    reward -= w_p * power_sum
+    reward += w_kw_ratio * (kw / power_sum)
+    return reward
+
+def _train_sac_step(sac, optimizers, schedulers, environment_model, loss_fn, reward_keys, batch, gamma, alpha, is_warmup=False, **reward_kwargs):
+    states, actions, _, next_states, dones = batch
+    
+    with torch.no_grad():
+        env_input = torch.cat([states, actions], dim=-1)
+        reward_features = environment_model(env_input)
+        # 環境模型回傳的是 2D 張量 [batch, reward_dim]，不需再做序列切片
+        reward_features_np = reward_features.cpu().numpy()
+        
+        # 使用 numpy 進行高效計算
+        scalar_rewards = np.apply_along_axis(compute_reward, 1, reward_features_np, reward_keys=reward_keys, **reward_kwargs).astype(np.float32)
+        scalar_rewards = torch.FloatTensor(scalar_rewards).unsqueeze(-1).to(DEVICE)
+
+        next_actions = sac(next_states)
+        q1_next, q2_next = sac.evaluate_action(next_states, next_actions)
+        q_next = torch.min(q1_next, q2_next)
+        log_prob_next = sac.log_prob(next_states[:, -1, :], next_actions[:, -1, :])
+        target_q = scalar_rewards + gamma * (1 - dones[:, -1, :].float()) * (q_next - alpha * log_prob_next)
+
+    q1, q2 = sac.evaluate_action(states, actions)
+    critic_loss = loss_fn(q1, target_q) + loss_fn(q2, target_q)
+
+    optimizers['critic'].zero_grad()
+    critic_loss.backward()
+    optimizers['critic'].step()
+    schedulers['critic'].step()
+
+    actor_loss = torch.tensor(0.0)
+    if not is_warmup:
+        actions_pred = sac(states)
+        p1_pred, p2_pred = sac.evaluate_action(states, actions_pred)
+        log_prob_pred = sac.log_prob(states[:, -1, :], actions_pred[:, -1, :])
+        actor_loss = (alpha * log_prob_pred - torch.min(p1_pred, p2_pred)).mean()
+
+        optimizers['actor'].zero_grad()
+        actor_loss.backward()
+        optimizers['actor'].step()
+        schedulers['actor'].step()
+
+    return actor_loss.item(), critic_loss.item()
+
+def save_best_models(sac, save_dir, model_type, actor_loss, critic_loss, best_losses):
+    """統一處理模型保存，避免重複"""
+    timestamp = time.strftime('%Y%m%d-%H%M%S')
+    actor_best_loss, critic_best_loss = best_losses
+
+    if actor_loss < actor_best_loss:
+        path = os.path.join(save_dir, f"{timestamp}_{model_type}_ACTOR.pth")
+        torch.save(sac.actor.state_dict(), path)
+        actor_best_loss = actor_loss
+    
+    if critic_loss < critic_best_loss:
+        path1 = os.path.join(save_dir, f"{timestamp}_{model_type}_CRITIC1.pth")
+        path2 = os.path.join(save_dir, f"{timestamp}_{model_type}_CRITIC2.pth")
+        torch.save(sac.critic_1.state_dict(), path1)
+        torch.save(sac.critic_2.state_dict(), path2)
+        critic_best_loss = critic_loss
+    
+    return actor_best_loss, critic_best_loss
+
+def train_sac_agent(
+        sac: SoftActorCritic,
+        environment_model: nn.Module,
+        initial_states: np.ndarray,
+        reward_keys: list,
+        action_dim: int,
+        train_buffer: ReplayBuffer,
+        save_dir: str,
+        model_type: str = "SAC_LSTM",
+        batch_size: int = 128,
+        epochs: int = 100,
+        steps: int = 1000,
+        warmup_steps: int = 10000,
+        gamma: float = 0.99,
+        alpha: float = 0.2,
+        lr_actor: float = 3e-4,
+        lr_critic: float = 3e-4,
+        early_stop_patience: int = 10
+    ):
+
+    loss_fn = nn.MSELoss()
+    optimizers = {
+        'actor': optim.Adam(sac.actor.parameters(), lr=lr_actor, weight_decay=1e-4),
+        'critic': optim.Adam(list(sac.critic_1.parameters()) + list(sac.critic_2.parameters()), lr=lr_critic, weight_decay=1e-4)
+    }
+    schedulers = {
+        'actor': optim.lr_scheduler.StepLR(optimizers['actor'], step_size=10, gamma=0.1),
+        'critic': optim.lr_scheduler.StepLR(optimizers['critic'], step_size=10, gamma=0.1)
+    }
+
+    sac.to(DEVICE)
+    environment_model.to(DEVICE).eval()
+
+    best_losses = (float('inf'), float('inf'))
+    total_steps = 0
+    no_improvement_count = 0
+
+    for episode in range(epochs):
+        episode_actor_loss, episode_critic_loss, episode_steps = 0.0, 0.0, 0
+        initial_idx = np.random.randint(0, len(initial_states) - 1)
+        state = initial_states[initial_idx]
+        
+        for t in range(steps):
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(DEVICE)
+            with torch.no_grad():
+                action_tensor = sac(state_tensor)
+            action = action_tensor.squeeze(0).cpu().numpy()
+
+            with torch.no_grad():
+                env_input = torch.cat([state_tensor, action_tensor], dim=-1)
+                reward_features = environment_model(env_input)
+                # 模型輸出是 [1, reward_dim]，取第0行
+                reward_features_np = reward_features.cpu().numpy()[0]
+                scalar_reward = compute_reward(reward_features_np, reward_keys=reward_keys)
+
+                next_state_idx = initial_idx + t + 1
+                if next_state_idx < len(initial_states):
+                    next_state = initial_states[next_state_idx]
+                    done = False
+                else:
+                    next_state = state
+                    done = True
+
+            train_buffer.add(state, action.flatten(), scalar_reward, next_state, done)
+            state = next_state
+            total_steps += 1
+
+            if len(train_buffer.buffer) >= batch_size + train_buffer.sequence_length:
+                batch = train_buffer.sample(batch_size)
+                if batch is None:
+                    continue
+                
+                is_warmup = total_steps < warmup_steps
+                actor_loss, critic_loss = _train_sac_step(
+                    sac, optimizers, schedulers, environment_model, loss_fn, 
+                    reward_keys, batch, gamma, alpha, is_warmup=is_warmup
+                )
+                    
+                episode_actor_loss += actor_loss
+                episode_critic_loss += critic_loss
+                episode_steps += 1
+
+            if done:
+                break
+
+        
+        avg_actor_loss = episode_actor_loss / episode_steps if episode_steps > 0 else 0.0
+        avg_critic_loss = episode_critic_loss / episode_steps if episode_steps > 0 else 0.0
+
+        status = (
+            f"Episode {episode+1}/{epochs} - "
+            f"Actor Loss: {avg_actor_loss:.4f} - "
+            f"Critic Loss: {avg_critic_loss:.4f}"
+        )
+        
+        prev_best_critic_loss = best_losses[1]
+        best_losses = save_best_models(sac, save_dir, model_type, avg_actor_loss, avg_critic_loss, best_losses)
+        
+        if best_losses[1] < prev_best_critic_loss:
+            no_improvement_count = 0
+        else:
+            no_improvement_count += 1
+
+        yield avg_actor_loss, avg_critic_loss, status
+
+        if no_improvement_count >= early_stop_patience:
+            yield 0, 0, f"Early stopping at episode {episode+1} due to no improvement."
+            break
+
+    yield 0, 0, "Training finished."
 def train_model(
         model: torch.nn.Module,
         train_loader: torch.utils.data.DataLoader,

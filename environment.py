@@ -3,15 +3,15 @@ import wandb
 import numpy as np
 from tqdm import tqdm
 import sklearn.metrics as metrics
-#import os
-#import pandas as pd
+import os
+import pandas as pd
 
 import torch
-#import torch.nn as nn
-#import torch.nn.functional as F
+import torch.nn as nn
+import torch.nn.functional as F
 
-#import Preprocessing
-#from models import *
+import Preprocessing
+from models import LSTM_Model
 
 
 # 狀態向量示例：選取室內與外部環境多項溫度、濕度、電表功率等
@@ -48,8 +48,8 @@ EPOCHS = 100
 WARMUP_EPOCHS = 30  # 預熱階段的epoch數
 BATCH_SIZE = 128
 SEQUENCE_LENGTH = 60
-PRE_TRAINED_MODEL = r""  # 預訓練模型路徑，如果有的話
-MODEL_TYPE = "Trans"
+PRE_TRAINED_MODEL = r"/mnt/c/UEO_AI/model_record/environment/model_LSTM_20250921-180228.pth"  # 預訓練模型路徑，如果有的話
+MODEL_TYPE = "LSTM"
 KEY_WORDS = ['Kvar_tot', 'KW_tot', 'PF_avg']
 
 
@@ -163,7 +163,7 @@ def evaluate_r2(model, data_loader, scaler):
 
 
 if __name__ == "__main__":
-    '''os.makedirs('model_record/environment', exist_ok=True)
+    os.makedirs('model_record/environment', exist_ok=True)
 
 
     ## 資料處理 ##
@@ -192,7 +192,7 @@ if __name__ == "__main__":
             state_cols.append(col)
 
 
-    print("predict targets: ", state_cols+action_cols)
+    # print("predict targets: ", state_cols+action_cols)
     train_feature, train_target, x_scaler, y_scaler = Preprocessing.preprocess_for_lstm(
         train_csv_file,
         datetime_col='DateTime',
@@ -256,7 +256,7 @@ if __name__ == "__main__":
     
 
     ## 模型訓練 ##
-    model = Transformer_Model(
+    model = LSTM_Model(
         input_size=len(state_cols+action_cols),
         output_size=len(reward_cols)
     ).to(DEVICE)
@@ -286,7 +286,7 @@ if __name__ == "__main__":
         milestones=[WARMUP_EPOCHS]
     )
     
-    train_model(
+    '''train_model(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -306,5 +306,15 @@ if __name__ == "__main__":
     print("test r2", evaluate_r2(model, test_loader, y_scaler))
 
     print("val loss: ", evaluate_model(model, val_loader, criterion))
-    print("val r2", evaluate_r2(model, val_loader, y_scaler))'''
-    
+    print("val r2", evaluate_r2(model, val_loader, y_scaler))
+
+    '''
+    predicts = predict(model, val_loader, y_scaler)
+    import matplotlib.pyplot as plt
+    length = 20
+    idx = 1
+    print(reward_cols)
+    plt.plot(range(len(predicts[0][:length,idx])), predicts[0][:length,idx], label='predict', linestyle='--')
+    plt.plot(range(len(predicts[1][:length,idx])), predicts[1][:length,idx], label='real', linestyle='--')
+    plt.legend()
+    plt.show()

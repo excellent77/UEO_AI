@@ -409,7 +409,6 @@ def train_sac_agent(
         environment_model: nn.Module,
         initial_states: np.ndarray,
         reward_keys: list,
-        action_dim: int,
         train_buffer: ReplayBuffer,
         save_dir: str,
         model_type: str = "SAC_LSTM",
@@ -510,10 +509,10 @@ def train_sac_agent(
         yield avg_actor_loss, avg_critic_loss, status
 
         if no_improvement_count >= early_stop_patience:
-            yield 0, 0, f"Early stopping at episode {episode+1} due to no improvement."
+            yield None, None, f"Early stopping at episode {episode+1} due to no improvement."
             break
 
-    yield 0, 0, "Training finished."
+    yield None, None, "Training finished."
 def train_model(
         model: torch.nn.Module,
         train_loader: torch.utils.data.DataLoader,
@@ -569,6 +568,43 @@ def train_model(
         yield avg_loss, val_loss, val_r2, lr_now, (
             f"Epoch {epoch+1}/{num_epochs} - Loss: {avg_loss:.4f} - val_Loss: {val_loss:.4f} - val_r2: {val_r2:.4f} - LR: {lr_now:.6f}"
         )
+
+def load_sac_actor_and_get_action(
+        actor_model_path: str,
+        state_dim: int,
+        action_dim: int,
+        current_state: np.ndarray
+    ) -> np.ndarray:
+    """
+    載入訓練好的 SAC Actor 模型，並根據當前狀態獲取最佳動作。
+
+    Args:
+        actor_model_path (str): 已訓練的 Actor 模型權重檔案路徑 (.pth)。
+        state_dim (int): 狀態空間的維度。
+        action_dim (int): 動作空間的維度。
+        current_state (np.ndarray): 當前的環境狀態，應為 1D NumPy 陣列。
+
+    Returns:
+        np.ndarray: 模型預測的最佳動作，為 1D NumPy 陣列。
+    """
+    # 1. 建立 SAC 模型結構
+    # 注意：我們只需要 Actor 的部分，但為了載入權重，需要先建立完整的 LSTMActor
+    actor = LSTMActor(state_dim=state_dim, action_dim=action_dim).to(DEVICE)
+
+    # 2. 載入已訓練的 Actor 權重
+    actor.load_state_dict(torch.load(actor_model_path, map_location=DEVICE))
+    actor.eval()  # 切換到評估模式
+
+    # 3. 準備輸入狀態
+    # 將 1D 狀態陣列轉換為符合 LSTM 輸入的 3D Tensor [batch, seq_len, features]
+    state_tensor = torch.FloatTensor(current_state).unsqueeze(0).unsqueeze(0).to(DEVICE)
+
+    # 4. 執行推論
+    with torch.no_grad():
+        action_tensor = actor(state_tensor, sequence=False) # sequence=False 取最後時間步
+
+    # 5. 將輸出的動作轉換為 NumPy 陣列並回傳
+    return action_tensor.squeeze(0).cpu().numpy()
 
 def predict(
         model:torch.nn.Module,

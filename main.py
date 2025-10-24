@@ -32,7 +32,7 @@ SEQUENCE_LENGTH = 60
 EARLY_STOPPING_PREDICT = 10
 EARLY_STOPPING_SOLVER = 10
 SOLVER_MODEL_TYPE = "SAC_LSTM"
-SOLVER_MODEL_DIR = os.path.join(MODEL_DIR, 'DDPG') # 沿用舊的 DDPG 資料夾
+SOLVER_MODEL_DIR = os.path.join(MODEL_DIR, 'DDPG')
 REPLAY_BUFFER_CAPACITY = 10000
 BATCH_SIZE = 128
 
@@ -124,6 +124,7 @@ if __name__ == "__main__":
 
             with gr.Tab("資料清洗"):
                 DP_fill = gr.Dropdown(choices=Preprocessing.FILL_STRATEGIES, label="請選擇缺失值填補策略")
+                NUM_fill_constant = gr.Number(label="請輸入填補常數", value=0, visible=False, interactive=True)
                 DP_scale = gr.Dropdown(choices=Preprocessing.SCALE_METHODS, label="請選擇正規化方式")
                 NUM_sequence_length = gr.Slider(label="序列長度 (以多少個時間點為一個序列間隔)", minimum=1, maximum=100, step=1, value=SEQUENCE_LENGTH, interactive=True)
 
@@ -142,7 +143,8 @@ if __name__ == "__main__":
                     reward_cols:list, # 標籤(預測目標)欄位清單
                     fill_strategy:str, # 缺失值填補策略
                     scale_method:str, # 特徵正規化方式
-                    sequence_length:int # 序列長度
+                    sequence_length:int, # 序列長度
+                    fill_value:int=0 # 填補常數
                 )->list:
                     """
                     調用自訂 Preprocessing 模組的預處理流程，產生 LSTM 可用的特徵與標籤及標準化器。
@@ -150,11 +152,16 @@ if __name__ == "__main__":
                         [資料形狀資訊, X特徵, y標籤, 標準化器物件]
                     """
                     # 進行資料清洗與轉換
+                    preprocess_kwargs = {}
+                    if fill_strategy == 'constant':
+                        preprocess_kwargs['fill_value'] = fill_value
+
                     train_feature, train_target, x_scaler, y_scaler = Preprocessing.preprocess_for_lstm(
                         train_df,
                         datetime_col=datetime_col, feature_cols=act_cols+reward_cols, target_cols=reward_cols,
                         fill_strategy=fill_strategy, scale_method=scale_method, 
-                        sequence_length=sequence_length
+                        sequence_length=sequence_length,
+                        **preprocess_kwargs
                     )
 
                     val_feature, val_target, _, _ = Preprocessing.preprocess_for_lstm(
@@ -165,7 +172,8 @@ if __name__ == "__main__":
                         apply_scaler={
                             "feature": x_scaler,
                             "target": y_scaler
-                        }  # 使用訓練集的標準化器
+                        },  # 使用訓練集的標準化器
+                        **preprocess_kwargs
                     )
 
                     shape_str = f'''
@@ -189,7 +197,8 @@ if __name__ == "__main__":
                         CBG_reward,
                         DP_fill,
                         DP_scale,
-                        NUM_sequence_length
+                        NUM_sequence_length,
+                        NUM_fill_constant
                     ],
                     outputs=[
                         output_clean,
@@ -199,21 +208,36 @@ if __name__ == "__main__":
                     ]
                 )
 
+                def update_fill_constant_visibility(strategy):
+                    if strategy == 'constant':
+                        return gr.update(visible=True)
+                    return gr.update(visible=False)
+
+                DP_fill.change(
+                    fn=update_fill_constant_visibility,
+                    inputs=DP_fill,
+                    outputs=NUM_fill_constant
+                )
 
             with gr.Tab("超參數設定"):
-                DP_model_name = gr.Dropdown(choices=models.MODEL_LIST, label="選擇使用模型")
-                DP_pre_model = gr.Dropdown(choices=os.listdir(f"{MODEL_DIR}/{models.MODEL_LIST[0]}")+[None], label="請選擇預訓練模型", value=None)
-                NUM_epochs = gr.Number(label="訓練週期數 (Epochs)", value=100, precision=0)
-                NUM_lr = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-5, maximum=1e-3, step=1e-5, value=1e-4, interactive=True)
-                DP_loss = gr.Dropdown(choices=losses.LOSS_LIST, label="Loss Function", value=losses.LOSS_LIST[0])
-                DP_opt = gr.Dropdown(choices=optimizers.OPTIM_LIST, label="Optimizer", value=optimizers.OPTIM_LIST[0])
-                DP_sch = gr.Dropdown(choices=schedulers.SCH_LIST, label="Scheduler", value=schedulers.SCH_LIST[0])
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 1. 設定 Model 超參數")
+                        DP_model_name = gr.Dropdown(choices=models.MODEL_LIST, label="選擇使用模型")
+                        DP_pre_model = gr.Dropdown(choices=os.listdir(f"{MODEL_DIR}/{models.MODEL_LIST[0]}")+[None], label="請選擇預訓練模型", value=None)
+                        NUM_epochs = gr.Number(label="訓練週期數 (Epochs)", value=100, precision=0)
+                        NUM_lr = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-5, maximum=1e-3, step=1e-5, value=1e-4, interactive=True)
+                        DP_loss = gr.Dropdown(choices=losses.LOSS_LIST, label="Loss Function", value=losses.LOSS_LIST[0])
+                        DP_opt = gr.Dropdown(choices=optimizers.OPTIM_LIST, label="Optimizer", value=optimizers.OPTIM_LIST[0])
+                        DP_sch = gr.Dropdown(choices=schedulers.SCH_LIST, label="Scheduler", value=schedulers.SCH_LIST[0])
+                        BTN_train = gr.Button("開始訓練模型", interactive=False)
 
-                BTN_train = gr.Button("開始訓練模型", interactive=False)
-                output_hyp = gr.Textbox(lines=5, label="訓練進度")
-                loss_plot = gr.Plot(label="Loss 變化")
-                r2_plot = gr.Plot(label="val_R square 變化")
-                lr_plot = gr.Plot(label="Learning Rate 變化")
+                    with gr.Column(scale=2):
+                        gr.Markdown("### 2. 訓練進度")
+                        output_hyp = gr.Textbox(lines=5, label="訓練進度")
+                        loss_plot = gr.Plot(label="Loss 變化")
+                        r2_plot = gr.Plot(label="val_R square 變化")
+                        lr_plot = gr.Plot(label="Learning Rate 變化")
 
 
                 def start_to_train(
@@ -357,11 +381,12 @@ if __name__ == "__main__":
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### 1. 選擇環境與欄位")
-                        DP_env_model_name = gr.Dropdown(choices=models.MODEL_LIST, label="選擇環境模型類別")
-                        DP_env_model_file = gr.Dropdown(choices=[], label="選擇已訓練的環境模型檔案")
+                        DP_env_model_name = gr.Dropdown(choices=[None]+list(models.MODEL_LIST), label="選擇環境模型類別")
+                        data_dir = os.path.join(MODEL_DIR, models.MODEL_LIST[0])
+                        DP_env_model_file = gr.Dropdown(choices=[],label="選擇已訓練的環境模型檔案")
                         BTN_solver_cols = gr.Button("確認欄位")
 
-                        gr.Markdown("### 2. 設定 SAC 超參數")
+                        gr.Markdown("### 2. 設定 Model 超參數")
                         NUM_solver_epochs = gr.Number(label="訓練週期數 (Epochs)", value=100, precision=0)
                         NUM_solver_steps = gr.Number(label="每週期最大步數 (Steps)", value=1000, precision=0)
                         NUM_warmup_steps = gr.Number(label="預熱步數 (Warmup Steps)", value=10000, precision=0)
@@ -442,7 +467,7 @@ if __name__ == "__main__":
                     sac_agent = models.SoftActorCritic(state_dim, action_dim)
                     replay_buffer = models.ReplayBuffer(capacity=REPLAY_BUFFER_CAPACITY, sequence_length=SEQUENCE_LENGTH)
 
-                    status_record = f"---Starting SAC Training---\n"
+                    status_record = f"---Starting Reinforce Training---\n"
                     actor_loss_hist, critic_loss_hist = [], []
 
                     # 3. 開始訓練
@@ -451,7 +476,6 @@ if __name__ == "__main__":
                         environment_model=environment_model,
                         initial_states=initial_states,
                         reward_keys=reward_cols,
-                        action_dim=action_dim,
                         train_buffer=replay_buffer,
                         save_dir=SOLVER_MODEL_DIR,
                         model_type=SOLVER_MODEL_TYPE,
@@ -476,7 +500,7 @@ if __name__ == "__main__":
                                 {'x': epochs_range, 'y': actor_loss_hist, 'label': 'Actor Loss'},
                                 {'x': epochs_range, 'y': critic_loss_hist, 'label': 'Critic Loss'}
                             ],
-                            title="SAC Solver Loss"
+                            title="Solver Loss"
                         )
                         yield loss_fig, status_record
                         plt.close(loss_fig)
@@ -582,5 +606,5 @@ if __name__ == "__main__":
             outputs=[DP_pre_model]
         )
 
-    print("Starting Gradio demo...")
+    print("Starting Gradio...")
     demo.launch()

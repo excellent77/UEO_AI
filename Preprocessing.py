@@ -67,7 +67,9 @@ def remove_outliers_iqr(df: pd.DataFrame, factor: float = 1.5) -> pd.DataFrame:
 
 def fill_missing(
         df: pd.DataFrame,  # 原始資料
-        strategy: Literal['mean', 'median', 'most_frequent', 'constant']='mean'  # 缺失值填補策略
+        strategy: Literal['mean', 'median', 'most_frequent', 'constant']='mean',  # 缺失值填補策略
+        *args,
+        **kwargs
     ) -> pd.DataFrame:
     '''
     填補缺失值，僅對數值型欄位進行填補。
@@ -81,7 +83,7 @@ def fill_missing(
     df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
     
     # 只對數值型欄位做補值
-    imputer = SimpleImputer(strategy=strategy)
+    imputer = SimpleImputer(strategy=strategy, *args, **kwargs)
     df_numeric = pd.DataFrame(imputer.fit_transform(df[numeric_cols]), columns=numeric_cols, index=df.index)
     
     # 其他欄位（如時間）直接保留
@@ -139,7 +141,8 @@ def preprocess_for_lstm(
         fill_strategy:Literal['mean', 'median', 'most_frequent', 'constant']='mean', # 缺失值填補策略
         scale_method:Literal['minmax', 'standard']='minmax', # 特徵正規化方式
         sequence_length:int=24, # LSTM 序列長度
-        apply_scaler:dict={}
+        apply_scaler:dict={},
+        **kwargs
     )->tuple:
     '''
     對資料進行預處理，生成 LSTM 所需的特徵和標籤。
@@ -158,7 +161,7 @@ def preprocess_for_lstm(
 
     df = clean_data(df, datetime_col)
     df = remove_outliers_iqr(df, factor=150)
-    df = fill_missing(df, strategy=fill_strategy)
+    df = fill_missing(df, strategy=fill_strategy, **kwargs)
 
     feature_data = df[feature_cols]
     target_data = df[target_cols]

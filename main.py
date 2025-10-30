@@ -516,10 +516,11 @@ if __name__ == "__main__":
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("#### 1. 選擇模型與資料")
+                        DP_inference_method = gr.Dropdown(choices=["SAC Actor", "Golden Sample"], label="選擇推論方法", value="SAC Actor")
                         actor_model_files = [] # 初始化為空，將由事件觸發更新
-                        DP_actor_model = gr.Dropdown(choices=actor_model_files, label="選擇 Actor 模型檔案")
+                        DP_actor_model = gr.Dropdown(choices=actor_model_files, label="選擇 Actor 模型檔案", visible=True)
                         inference_data = gr.File(label="上傳推論資料集 (CSV)", file_types=[".csv"])
-                        BTN_run_inference = gr.Button("生成最佳動作", interactive=False)
+                        BTN_run_inference = gr.Button("生成最佳動作", interactive=True)
 
                     with gr.Column(scale=2):
                         gr.Markdown("#### 2. 推論結果")
@@ -527,14 +528,24 @@ if __name__ == "__main__":
                         inference_output_plot = gr.Plot(label="動作變化圖")
 
                 def run_inference(
+                    method,
                     actor_model_file,
                     inference_file,
+                    historical_train_file, # 用於 Golden Sample
                     state_cols,
                     action_cols,
                     state_scaler # 直接使用 state_scaler
                 ):
-                    if not all([actor_model_file, inference_file, state_cols, action_cols, state_scaler]):
+                    if not all([inference_file, state_cols, action_cols]):
                         gr.Warning("請確保已在先前頁籤完成所有設定 (欄位選擇、資料清洗)，並在此處選擇模型和上傳資料。")
+                        return None, None
+                    
+                    if method == "SAC Actor" and not actor_model_file:
+                        gr.Warning("使用 SAC Actor 方法時，必須選擇一個模型檔案。")
+                        return None, None
+                    
+                    if method == "Golden Sample" and not historical_train_file:
+                        gr.Warning("使用 Golden Sample 方法時，必須已上傳訓練資料集。")
                         return None, None
 
                     try:
@@ -542,57 +553,71 @@ if __name__ == "__main__":
                     except Exception as e:
                         raise gr.Error(f"讀取推論資料時發生錯誤: {e}")
 
-                    # 1. 預處理推論資料 (只處理 state 相關欄位)
+                    # 預處理推論資料 (對 state 欄位)
                     df_cleaned = Preprocessing.clean_data(df, datetime_col=None)
                     df_cleaned = Preprocessing.remove_outliers_iqr(df_cleaned)
                     df_cleaned = Preprocessing.fill_missing(df_cleaned, strategy='mean')
 
-                    # 確保推論資料包含所有必要的 state 欄位
                     if not all(col in df_cleaned.columns for col in state_cols):
                         missing_cols = [col for col in state_cols if col not in df_cleaned.columns]
                         raise gr.Error(f"推論資料缺少必要的狀態欄位: {missing_cols}")
 
-                    # 2. 使用從求解器步驟儲存的 state_scaler 來標準化狀態
-                    scaled_states_df, _ = Preprocessing.scale_features(df_cleaned[state_cols], scaler=state_scaler)
-                    inference_states = scaled_states_df.values
-
-                    # 3. 載入模型並生成動作
-                    actor_model_path = os.path.join(SOLVER_MODEL_DIR, actor_model_file)
-                    # 1. 建立 SAC 模型結構
-                    sac_model = models.SoftActorCritic(state_dim=len(state_cols), action_dim=len(action_cols),)
-                    # 2. 載入包含 actor 和 encoder 權重的狀態字典
-                    try:
-                        state_dict = torch.load(actor_model_path)
-                        sac_model.actor.load_state_dict(state_dict['actor'])
-                        sac_model.encoder.load_state_dict(state_dict['encoder'])
-                    except RuntimeError as e:
-                        raise RuntimeError(
-                            f"載入 Actor 模型權重時發生錯誤: {e}\n"
-                            "這通常是因為推論時的 state_dim/action_dim 與訓練時不符。"
-                            "請檢查 `load_sac_actor_and_get_action` 的參數。"
-                        ) from e
-                    except KeyError:
-                        # 為了向後兼容舊的只儲存 actor 的模型
-                        print("警告：載入的模型檔案不包含 'encoder' 權重，推論可能不準確。將只載入 'actor' 權重。")
-                        sac_model.actor.load_state_dict(torch.load(actor_model_path))
-
                     generated_actions = []
-
                     import tqdm
-                    for state in tqdm.tqdm(inference_states):
-                        action = models.sac_get_action(sac_model, current_state=state)
-                        generated_actions.append(action)
+
+                    if method == "SAC Actor":
+                        # 使用從求解器步驟儲存的 state_scaler 來標準化狀態
+                        scaled_states_df, _ = Preprocessing.scale_features(df_cleaned[state_cols], scaler=state_scaler)
+                        inference_states = scaled_states_df.values
+
+                        # 載入模型並生成動作
+                        actor_model_path = os.path.join(SOLVER_MODEL_DIR, actor_model_file)
+                        sac_model = models.SoftActorCritic(state_dim=len(state_cols), action_dim=len(action_cols))
+                        try:
+                            state_dict = torch.load(actor_model_path)
+                            sac_model.actor.load_state_dict(state_dict['actor'])
+                            sac_model.encoder.load_state_dict(state_dict['encoder'])
+                        except RuntimeError as e:
+                            raise RuntimeError(f"載入 Actor 模型權重時發生錯誤: {e}") from e
+                        except KeyError:
+                            print("警告：載入的模型檔案不包含 'encoder' 權重，推論可能不準確。將只載入 'actor' 權重。")
+                            sac_model.actor.load_state_dict(torch.load(actor_model_path))
+
+                        for state in tqdm.tqdm(inference_states, desc="Running SAC Inference"):
+                            action = models.sac_get_action(sac_model, current_state=state)
+                            generated_actions.append(action)
+
+                    elif method == "Golden Sample":
+                        # 讀取歷史資料
+                        historical_df = pd.read_csv(historical_train_file.name)
+                        # 初始化專家系統
+                        golden_expert = models.Golden_Sample(df=historical_df, state_cols=state_cols, action_cols=action_cols)
+                        
+                        # 對於 Golden Sample，我們使用未標準化的原始狀態進行比較
+                        inference_states = df_cleaned[state_cols].values
+
+                        for state in tqdm.tqdm(inference_states, desc="Running Golden Sample Inference"):
+                            action = models.golden_sample_get_action(golden_expert, current_state=state)
+                            generated_actions.append(action)
 
                     actions_df = pd.DataFrame(np.array(generated_actions), columns=action_cols)
                     
-                    # 4. 繪製結果
+                    # 繪製結果
                     axes = actions_df.plot(title="Generated Actions Over Time", subplots=True, layout=(-1, 1), figsize=(8, 2 * len(action_cols)), sharex=True)
                     fig = axes.flatten()[0].get_figure() # Get figure from the first subplot's axis
                     plt.tight_layout()
 
                     return actions_df, fig
 
-                BTN_run_inference.click(fn=run_inference, inputs=[DP_actor_model, inference_data, solver_state_cols, solver_action_cols, state_scaler_obj], outputs=[inference_output_df, inference_output_plot])
+                BTN_run_inference.click(
+                    fn=run_inference, 
+                    inputs=[DP_inference_method, DP_actor_model, inference_data, train_data, solver_state_cols, solver_action_cols, state_scaler_obj], 
+                    outputs=[inference_output_df, inference_output_plot]
+                )
+
+                DP_inference_method.change(
+                    fn=lambda method: gr.update(visible=method == "SAC Actor"),
+                    inputs=DP_inference_method, outputs=DP_actor_model)
 
         def update_columns(file)->list:
             """
@@ -706,11 +731,6 @@ if __name__ == "__main__":
         inference_tab.select(
             fn=update_actor_model_list,
             outputs=DP_actor_model
-        )
-        # 當上傳推論資料後，啟用執行按鈕
-        inference_data.change(
-            fn=lambda: gr.update(interactive=True),
-            outputs=[BTN_run_inference]
         )
 
         output_hyp.change(

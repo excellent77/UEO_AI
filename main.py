@@ -32,7 +32,7 @@ SEQUENCE_LENGTH = 60
 EARLY_STOPPING_PREDICT = 10
 EARLY_STOPPING_SOLVER = 10
 SOLVER_MODEL_TYPE = "SAC_LSTM"
-SOLVER_MODEL_DIR = os.path.join(MODEL_DIR, 'DDPG')
+SOLVER_MODEL_DIR = os.path.join(MODEL_DIR, 'DDPG') # 沿用舊的 DDPG 資料夾
 REPLAY_BUFFER_CAPACITY = 10000
 BATCH_SIZE = 128
 
@@ -219,12 +219,12 @@ if __name__ == "__main__":
                     outputs=NUM_fill_constant
                 )
 
-            with gr.Tab("超參數設定"):
+            with gr.Tab("超參數設定") as hyperparam_tab:
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### 1. 設定 Model 超參數")
                         DP_model_name = gr.Dropdown(choices=models.MODEL_LIST, label="選擇使用模型")
-                        DP_pre_model = gr.Dropdown(choices=os.listdir(f"{MODEL_DIR}/{models.MODEL_LIST[0]}")+[None], label="請選擇預訓練模型", value=None)
+                        DP_pre_model = gr.Dropdown(choices=[], label="請選擇預訓練模型", value=None)
                         NUM_epochs = gr.Number(label="訓練週期數 (Epochs)", value=100, precision=0)
                         NUM_lr = gr.Slider(label="學習率 (Learning Rate)", minimum=1e-5, maximum=1e-3, step=1e-5, value=1e-4, interactive=True)
                         DP_loss = gr.Dropdown(choices=losses.LOSS_LIST, label="Loss Function", value=losses.LOSS_LIST[0])
@@ -377,12 +377,11 @@ if __name__ == "__main__":
                     outputs=[loss_plot, r2_plot, lr_plot, output_hyp]
                 )
                         
-            with gr.Tab("求解器"):
+            with gr.Tab("求解器") as solver_tab:
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### 1. 選擇環境與欄位")
-                        DP_env_model_name = gr.Dropdown(choices=[None]+list(models.MODEL_LIST), label="選擇環境模型類別")
-                        data_dir = os.path.join(MODEL_DIR, models.MODEL_LIST[0])
+                        DP_env_model_name = gr.Dropdown(choices=list(models.MODEL_LIST), label="選擇環境模型類別")
                         DP_env_model_file = gr.Dropdown(choices=[],label="選擇已訓練的環境模型檔案")
                         BTN_solver_cols = gr.Button("確認欄位")
 
@@ -406,6 +405,7 @@ if __name__ == "__main__":
                 solver_action_cols = gr.State()
                 solver_reward_cols = gr.State()
                 initial_states_np = gr.State()
+                state_scaler_obj = gr.State() # 新增：儲存 state scaler
 
                 def set_solver_columns(action_cols, reward_cols, train_df, val_df, fill_strategy, scale_method):
                     feature_cols = action_cols + reward_cols
@@ -430,14 +430,14 @@ if __name__ == "__main__":
                     cleaned_df = Preprocessing.remove_outliers_iqr(cleaned_df)
                     cleaned_df = Preprocessing.fill_missing(cleaned_df, strategy=fill_strategy)
                     
-                    initial_states_df, _ = Preprocessing.scale_features(cleaned_df[state_cols], method=scale_method)
+                    initial_states_df, state_scaler = Preprocessing.scale_features(cleaned_df[state_cols], method=scale_method)
                     
-                    return state_cols, action_cols, reward_cols, initial_states_df.values.astype(np.float32)
+                    return state_cols, action_cols, reward_cols, initial_states_df.values.astype(np.float32), state_scaler
 
                 BTN_solver_cols.click(
                     fn=set_solver_columns,
                     inputs=[CBG_act, CBG_reward, train_data, val_data, DP_fill, DP_scale],
-                    outputs=[solver_state_cols, solver_action_cols, solver_reward_cols, initial_states_np]
+                    outputs=[solver_state_cols, solver_action_cols, solver_reward_cols, initial_states_np, state_scaler_obj]
                 )
 
                 def start_solver_train(
@@ -511,6 +511,88 @@ if __name__ == "__main__":
                     outputs=[solver_loss_plot, output_solver_hyp]
                 )
 
+            with gr.Tab("執行推論") as inference_tab:
+                gr.Markdown("### 使用已訓練的 SAC Actor 模型進行推論")
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 1. 選擇模型與資料")
+                        actor_model_files = [] # 初始化為空，將由事件觸發更新
+                        DP_actor_model = gr.Dropdown(choices=actor_model_files, label="選擇 Actor 模型檔案")
+                        inference_data = gr.File(label="上傳推論資料集 (CSV)", file_types=[".csv"])
+                        BTN_run_inference = gr.Button("生成最佳動作", interactive=False)
+
+                    with gr.Column(scale=2):
+                        gr.Markdown("#### 2. 推論結果")
+                        inference_output_df = gr.DataFrame(label="生成的動作")
+                        inference_output_plot = gr.Plot(label="動作變化圖")
+
+                def run_inference(
+                    actor_model_file,
+                    inference_file,
+                    state_cols,
+                    action_cols,
+                    state_scaler # 直接使用 state_scaler
+                ):
+                    if not all([actor_model_file, inference_file, state_cols, action_cols, state_scaler]):
+                        gr.Warning("請確保已在先前頁籤完成所有設定 (欄位選擇、資料清洗)，並在此處選擇模型和上傳資料。")
+                        return None, None
+
+                    try:
+                        df = pd.read_csv(inference_file.name)
+                    except Exception as e:
+                        raise gr.Error(f"讀取推論資料時發生錯誤: {e}")
+
+                    # 1. 預處理推論資料 (只處理 state 相關欄位)
+                    df_cleaned = Preprocessing.clean_data(df, datetime_col=None)
+                    df_cleaned = Preprocessing.remove_outliers_iqr(df_cleaned)
+                    df_cleaned = Preprocessing.fill_missing(df_cleaned, strategy='mean')
+
+                    # 確保推論資料包含所有必要的 state 欄位
+                    if not all(col in df_cleaned.columns for col in state_cols):
+                        missing_cols = [col for col in state_cols if col not in df_cleaned.columns]
+                        raise gr.Error(f"推論資料缺少必要的狀態欄位: {missing_cols}")
+
+                    # 2. 使用從求解器步驟儲存的 state_scaler 來標準化狀態
+                    scaled_states_df, _ = Preprocessing.scale_features(df_cleaned[state_cols], scaler=state_scaler)
+                    inference_states = scaled_states_df.values
+
+                    # 3. 載入模型並生成動作
+                    actor_model_path = os.path.join(SOLVER_MODEL_DIR, actor_model_file)
+                    # 1. 建立 SAC 模型結構
+                    sac_model = models.SoftActorCritic(state_dim=len(state_cols), action_dim=len(action_cols),)
+                    # 2. 載入包含 actor 和 encoder 權重的狀態字典
+                    try:
+                        state_dict = torch.load(actor_model_path)
+                        sac_model.actor.load_state_dict(state_dict['actor'])
+                        sac_model.encoder.load_state_dict(state_dict['encoder'])
+                    except RuntimeError as e:
+                        raise RuntimeError(
+                            f"載入 Actor 模型權重時發生錯誤: {e}\n"
+                            "這通常是因為推論時的 state_dim/action_dim 與訓練時不符。"
+                            "請檢查 `load_sac_actor_and_get_action` 的參數。"
+                        ) from e
+                    except KeyError:
+                        # 為了向後兼容舊的只儲存 actor 的模型
+                        print("警告：載入的模型檔案不包含 'encoder' 權重，推論可能不準確。將只載入 'actor' 權重。")
+                        sac_model.actor.load_state_dict(torch.load(actor_model_path))
+
+                    generated_actions = []
+
+                    import tqdm
+                    for state in tqdm.tqdm(inference_states):
+                        action = models.sac_get_action(sac_model, current_state=state)
+                        generated_actions.append(action)
+
+                    actions_df = pd.DataFrame(np.array(generated_actions), columns=action_cols)
+                    
+                    # 4. 繪製結果
+                    axes = actions_df.plot(title="Generated Actions Over Time", subplots=True, layout=(-1, 1), figsize=(8, 2 * len(action_cols)), sharex=True)
+                    fig = axes.flatten()[0].get_figure() # Get figure from the first subplot's axis
+                    plt.tight_layout()
+
+                    return actions_df, fig
+
+                BTN_run_inference.click(fn=run_inference, inputs=[DP_actor_model, inference_data, solver_state_cols, solver_action_cols, state_scaler_obj], outputs=[inference_output_df, inference_output_plot])
 
         def update_columns(file)->list:
             """
@@ -572,6 +654,19 @@ if __name__ == "__main__":
             outputs=DP_pre_model
         )
         
+        # 當切換到超參數設定分頁時，也觸發一次模型列表更新
+        hyperparam_tab.select(
+            fn=get_model_files,
+            inputs=DP_model_name,
+            outputs=DP_pre_model
+        )
+
+        # 當切換到求解器分頁時，也觸發一次環境模型列表更新
+        solver_tab.select(
+            fn=get_model_files,
+            inputs=DP_env_model_name,
+            outputs=DP_env_model_file
+        )
 
         # 更新求解器頁籤的環境模型選單
         DP_env_model_name.change(
@@ -598,6 +693,24 @@ if __name__ == "__main__":
             fn=lambda: gr.update(interactive=True),
             inputs=[],
             outputs=[BTN_solver_train]
+        )
+
+        def update_actor_model_list():
+            """讀取求解器模型目錄並更新 Actor 模型列表"""
+            if os.path.exists(SOLVER_MODEL_DIR):
+                actor_model_files = [f for f in os.listdir(SOLVER_MODEL_DIR) if 'ACTOR.pth' in f]
+            else:
+                actor_model_files = []
+            return gr.update(choices=actor_model_files)
+
+        inference_tab.select(
+            fn=update_actor_model_list,
+            outputs=DP_actor_model
+        )
+        # 當上傳推論資料後，啟用執行按鈕
+        inference_data.change(
+            fn=lambda: gr.update(interactive=True),
+            outputs=[BTN_run_inference]
         )
 
         output_hyp.change(

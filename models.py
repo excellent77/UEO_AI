@@ -385,23 +385,28 @@ def _train_sac_step(sac, optimizers, schedulers, environment_model, loss_fn, rew
 
     return actor_loss.item(), critic_loss.item()
 
-def save_best_models(sac, save_dir, model_type, actor_loss, critic_loss, best_losses):
+def save_best_models(sac, save_dir, model_type, actor_loss, critic_loss, best_losses, timestamp):
     """統一處理模型保存，避免重複"""
-    timestamp = time.strftime('%Y%m%d-%H%M%S')
     actor_best_loss, critic_best_loss = best_losses
 
     if actor_loss < actor_best_loss:
+        # 將 actor 和 encoder 一起儲存，因為它們在推論時需要協同工作
+        actor_state = {
+            'actor': sac.actor.state_dict(),
+            'encoder': sac.encoder.state_dict()
+        }
         path = os.path.join(save_dir, f"{timestamp}_{model_type}_ACTOR.pth")
-        torch.save(sac.actor.state_dict(), path)
+        torch.save(actor_state, path)
         actor_best_loss = actor_loss
-    
+        print(f"  -> New best actor model saved with loss: {actor_loss:.4f}")
+
     if critic_loss < critic_best_loss:
         path1 = os.path.join(save_dir, f"{timestamp}_{model_type}_CRITIC1.pth")
         path2 = os.path.join(save_dir, f"{timestamp}_{model_type}_CRITIC2.pth")
         torch.save(sac.critic_1.state_dict(), path1)
         torch.save(sac.critic_2.state_dict(), path2)
         critic_best_loss = critic_loss
-    
+        print(f"  -> New best critic models saved with loss: {critic_loss:.4f}")
     return actor_best_loss, critic_best_loss
 
 def train_sac_agent(
@@ -439,6 +444,7 @@ def train_sac_agent(
     best_losses = (float('inf'), float('inf'))
     total_steps = 0
     no_improvement_count = 0
+    training_timestamp = time.strftime('%Y%m%d-%H%M%S') # 在訓練開始時獲取唯一的時間戳
 
     for episode in range(epochs):
         episode_actor_loss, episode_critic_loss, episode_steps = 0.0, 0.0, 0
@@ -499,7 +505,7 @@ def train_sac_agent(
         )
         
         prev_best_critic_loss = best_losses[1]
-        best_losses = save_best_models(sac, save_dir, model_type, avg_actor_loss, avg_critic_loss, best_losses)
+        best_losses = save_best_models(sac, save_dir, model_type, avg_actor_loss, avg_critic_loss, best_losses, training_timestamp)
         
         if best_losses[1] < prev_best_critic_loss:
             no_improvement_count = 0
@@ -569,10 +575,8 @@ def train_model(
             f"Epoch {epoch+1}/{num_epochs} - Loss: {avg_loss:.4f} - val_Loss: {val_loss:.4f} - val_r2: {val_r2:.4f} - LR: {lr_now:.6f}"
         )
 
-def load_sac_actor_and_get_action(
-        actor_model_path: str,
-        state_dim: int,
-        action_dim: int,
+def sac_get_action(
+        sac_model:nn.Module,
         current_state: np.ndarray
     ) -> np.ndarray:
     """
@@ -587,24 +591,18 @@ def load_sac_actor_and_get_action(
     Returns:
         np.ndarray: 模型預測的最佳動作，為 1D NumPy 陣列。
     """
-    # 1. 建立 SAC 模型結構
-    # 注意：我們只需要 Actor 的部分，但為了載入權重，需要先建立完整的 LSTMActor
-    actor = LSTMActor(state_dim=state_dim, action_dim=action_dim).to(DEVICE)
-
-    # 2. 載入已訓練的 Actor 權重
-    actor.load_state_dict(torch.load(actor_model_path, map_location=DEVICE))
-    actor.eval()  # 切換到評估模式
+    sac_model = sac_model.to(DEVICE)
+    sac_model.eval()  # 將整個 SAC 模型切換到評估模式
 
     # 3. 準備輸入狀態
-    # 將 1D 狀態陣列轉換為符合 LSTM 輸入的 3D Tensor [batch, seq_len, features]
     state_tensor = torch.FloatTensor(current_state).unsqueeze(0).unsqueeze(0).to(DEVICE)
 
     # 4. 執行推論
     with torch.no_grad():
-        action_tensor = actor(state_tensor, sequence=False) # sequence=False 取最後時間步
+        action_tensor = sac_model(state_tensor)
 
     # 5. 將輸出的動作轉換為 NumPy 陣列並回傳
-    return action_tensor.squeeze(0).cpu().numpy()
+    return action_tensor[:, -1, :].squeeze(0).cpu().numpy()
 
 def predict(
         model:torch.nn.Module,

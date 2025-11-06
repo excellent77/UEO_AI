@@ -11,6 +11,7 @@ if __name__ == "__main__":
     for mode in models.MODEL_LIST:
         os.makedirs(os.path.join(tab_shared.MODEL_DIR, mode), exist_ok=True)
     os.makedirs(tab_shared.SOLVER_MODEL_DIR, exist_ok=True)
+    os.makedirs(tab_shared.OUTPUT_DIR, exist_ok=True)
 
     with gr.Blocks() as demo:
         gr.Markdown("## 耗能設備的通用性能源操作優化框架 ")

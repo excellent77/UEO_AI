@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import torch
 import tqdm
+import datetime # 新增：導入 datetime 模組
 import matplotlib.pyplot as plt
 
 import ui_tabs.models as models
@@ -28,6 +29,7 @@ def create_inference_tab(train_data, solver_state_cols, solver_action_cols, stat
                 gr.Markdown("#### 2. 推論結果")
                 inference_output_df = gr.DataFrame(label="生成的動作")
                 inference_output_plot = gr.Plot(label="動作變化圖")
+                inference_output_csv = gr.File(label="下載生成的動作 (CSV)") # 新增：用於下載 CSV 檔案的 Gradio 元件
 
     def run_inference(method, actor_model_file, inference_file, historical_train_file, state_cols, action_cols, state_scaler):
         if not all([inference_file, state_cols, action_cols]):
@@ -80,7 +82,11 @@ def create_inference_tab(train_data, solver_state_cols, solver_action_cols, stat
                 generated_actions.append(action)
 
         actions_df = pd.DataFrame(np.array(generated_actions), columns=action_cols)
-        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = f"inference_actions_{timestamp}.csv"
+        output_filepath = os.path.join(tab_shared.OUTPUT_DIR, filename)
+        actions_df.to_csv(output_filepath, index=False)
+
         fig, axes = plt.subplots(len(action_cols), 1, figsize=(8, 2 * len(action_cols)), sharex=True)
         if len(action_cols) == 1:
             axes = [axes] # make it iterable
@@ -91,12 +97,12 @@ def create_inference_tab(train_data, solver_state_cols, solver_action_cols, stat
         fig.suptitle("Generated Actions Over Time")
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 
-        return actions_df, fig
+        return actions_df, fig, output_filepath # 返回 DataFrame、圖表和 CSV 檔案路徑
 
     BTN_run_inference.click(
         fn=run_inference, 
         inputs=[DP_inference_method, DP_actor_model, inference_data, train_data, solver_state_cols, solver_action_cols, state_scaler_obj], 
-        outputs=[inference_output_df, inference_output_plot]
+        outputs=[inference_output_df, inference_output_plot, inference_output_csv] # 更新輸出，包含 CSV 檔案
     )
 
     DP_inference_method.change(

@@ -10,9 +10,9 @@ UEO-AI was designed as a reusable workflow for eight common energy-consuming sys
 
 Industrial energy optimization is difficult to generalize:
 
-- equipment has different sensors, control variables, and operating patterns;
-- real-world time-series data contains missing values, outliers, and incompatible scales;
-- testing control policies directly on physical equipment can be costly or unsafe; and
+- equipment has different sensors, control variables, and operating patterns
+- real-world time-series data contains missing values, outliers, and incompatible scales
+- testing control policies directly on physical equipment can be costly or unsafe
 - a prediction model alone does not answer the operational question: **what action should the operator take next?**
 
 UEO-AI addresses this by separating the problem into two learned components:
@@ -39,14 +39,9 @@ The environment model predicts reward-related equipment signals from state and a
 
 ## My Contribution
 
-- Designed a **schema-configurable pipeline** in which users identify timestamp, action, and reward columns through the UI rather than modifying training code.
-- Built reusable preprocessing for datetime handling, IQR outlier removal, missing-value imputation, feature scaling, and sliding-window sequence generation.
-- Implemented three interchangeable PyTorch environment models: **LSTM, GRU, and Transformer**.
-- Added experiment controls for loss functions, optimizers, schedulers, learning rate, epochs, pretrained checkpoints, and early stopping.
-- Implemented an **LSTM-based Soft Actor-Critic agent** with twin critics, replay buffer, warm-up training, checkpointing, and deterministic inference.
-- Added a **Golden Sample baseline** so learned policies can be compared with actions retrieved from historically similar operating states.
-- Built the complete workflow as a modular **Gradio application**, including live training curves, model selection, inference visualization, and downloadable CSV recommendations.
-- Refactored UI tabs, model logic, preprocessing, and training utilities into separate modules to make new equipment types and algorithms easier to add.
+- Reprocessed the project's multi-year, multi-equipment dataset directly from raw SQL records after identifying unit inconsistencies caused by sensor and equipment replacements, and rebuilt a complete data generation, imputation, and cleaning pipeline from scratch.
+- Proposed and prototyped a recurrent-network-based surrogate environment model, enabling the Soft Actor-Critic policy to be trained and evaluated without requiring a real physical environment for trial-and-error.
+- Contributed to the project's Gradio interface, helping implement parts of the application used to run and inspect the trained models.
 
 ## Results
 
@@ -62,11 +57,9 @@ Quantitative energy savings are intentionally not reported without equipment-spe
 
 ## What I Learned
 
-- A reusable industrial AI system depends as much on **data contracts and preprocessing consistency** as on model architecture.
+- A reusable industrial AI system depends as much on data contracts and preprocessing consistency as on model architecture.
 - Learning a surrogate environment allows control research without continuously experimenting on physical equipment, but policy quality is bounded by model fidelity and training-data coverage.
-- Validation R² is useful but insufficient: a model can predict average behavior well and still be unreliable in the operating regions selected by an RL policy.
 - Separating prediction from control makes the framework easier to evaluate—environment-model error and policy behavior can be diagnosed independently.
-- An optimization recommendation should remain auditable, so model checkpoints, training curves, input-column definitions, and exported actions are first-class outputs.
 
 ## End-to-End Workflow
 
@@ -150,14 +143,6 @@ For inference, the uploaded CSV must contain the state columns established durin
 │   └── schedulers.py               # scheduler factory
 └── requirements.txt
 ```
-
-## Current Limitations & Next Steps
-
-- Add reproducible benchmark datasets and equipment-level energy-saving metrics.
-- Evaluate policies offline against historical and rule-based baselines before field deployment.
-- Add action bounds, operational safety constraints, and out-of-distribution detection.
-- Persist preprocessing metadata with each checkpoint for fully independent inference sessions.
-- Add automated tests for data transformations, checkpoint compatibility, and policy outputs.
 
 ## Tech Stack
 
